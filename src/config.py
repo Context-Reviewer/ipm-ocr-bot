@@ -123,6 +123,8 @@ TESSERACT_CMD = r"C:\Program Files\Tesseract-OCR\tesseract.exe"  # leave empty t
 OCR_SNAP_DEBUG = False  # set True to save OCR debug crops
 # Planet stats panel bbox: (x, y, w, h)
 PLANET_STATS_PANEL = (1443, 697, 149, 263)
+PLANET_SWITCH_DELAY = 0.20
+PLANET_OCR_RETRY_DELAY = 0.20
 
 ORE_QTY_SAMPLES = 7
 ORE_QTY_SAMPLE_DELAY = 0.08

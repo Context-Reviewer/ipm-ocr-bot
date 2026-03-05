@@ -120,13 +120,13 @@ def planet_module(planets: int = 15):
         time.sleep(MENU_DELAY)
 
     def maybe_resync_levels_for_current_planet(levels: dict, planet_index: int) -> bool:
-        if not (mining_available() or speed_available() or cargo_available()):
-            print(f"[PLANET] p={planet_index} not on upgrade panel; skipping")
-            return False
         ui_levels = read_planet_levels("PLANET_STATS_PANEL")
         if not ui_levels:
-            print(f"[PLANET] p={planet_index} level OCR failed; skipping")
-            return False
+            time.sleep(config.PLANET_OCR_RETRY_DELAY)
+            ui_levels = read_planet_levels("PLANET_STATS_PANEL")
+            if not ui_levels:
+                print(f"[PLANET] p={planet_index} level OCR failed; skipping")
+                return False
         levels["m"] = ui_levels.mining
         levels["s"] = ui_levels.speed
         levels["c"] = ui_levels.cargo
@@ -193,6 +193,7 @@ def planet_module(planets: int = 15):
 
             print(f"[PLANET] upgrades mining={upgrades_m} speed={upgrades_s} cargo={upgrades_c}")
             tap("=", SCROLL_DELAY)    # next planet
+            time.sleep(config.PLANET_SWITCH_DELAY)
 
     # Open planet menu
     tap("p", MENU_DELAY)
@@ -209,6 +210,7 @@ def planet_module(planets: int = 15):
         base_speed = planet_base_speed[planet_index]
         if not maybe_resync_levels_for_current_planet(levels, planet_index):
             tap("=", SCROLL_DELAY)    # next planet
+            time.sleep(config.PLANET_SWITCH_DELAY)
             continue
         cycle = config.PLANET_CYCLE_SECONDS.get(planet_index, config.DEFAULT_CYCLE_SECONDS)
         if cycle is not None:
@@ -238,6 +240,7 @@ def planet_module(planets: int = 15):
         levels_for_roi = {"m": levels["m"], "s": levels["s"], "c": levels["c"], "s_base": base_speed}
         candidates.extend(roi.planet_candidates(planet_index, levels_for_roi, cyan_flags))
         tap("=", SCROLL_DELAY)    # next planet
+        time.sleep(config.PLANET_SWITCH_DELAY)
 
     if dashboard_rows:
         print("PLANET | M  | S  | C  | PROD/CYCLE | CARGO | FILL")
@@ -274,6 +277,7 @@ def planet_module(planets: int = 15):
             if selections:
                 if not maybe_resync_levels_for_current_planet(levels, planet_index):
                     tap("=", SCROLL_DELAY)    # next planet
+                    time.sleep(config.PLANET_SWITCH_DELAY)
                     continue
             for cand in selections:
                 stat = cand["stat"]
@@ -302,6 +306,7 @@ def planet_module(planets: int = 15):
                     else:
                         print(f"[PLANET] exec p={planet_index} stat=C but cargo not available (cyan={available}); skipping fail-closed")
             tap("=", SCROLL_DELAY)    # next planet
+            time.sleep(config.PLANET_SWITCH_DELAY)
 
     # Exit planet menu (your known escape)
     tap("shift+1", MENU_DELAY)

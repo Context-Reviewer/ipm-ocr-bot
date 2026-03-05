@@ -1,0 +1,7 @@
+{
+  "Copper": {"base_value": 1},
+  "Iron": {"base_value": 2},
+  "Lead": {"base_value": 4},
+  "Silica": {"base_value": 8},
+  "Aluminium": {"base_value": 17}
+}

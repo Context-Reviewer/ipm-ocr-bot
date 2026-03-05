@@ -1,0 +1,62 @@
+{
+  "1": {
+    "name": "Balor",
+    "unlock_price": 100,
+    "distance": 10,
+    "yields": {"Copper": 100}
+  },
+  "2": {
+    "name": "Drasta",
+    "unlock_price": 200,
+    "distance": 12,
+    "yields": {"Copper": 80, "Iron": 20}
+  },
+  "3": {
+    "name": "Anadius",
+    "unlock_price": 500,
+    "distance": 14,
+    "yields": {"Copper": 50, "Iron": 50}
+  },
+  "4": {
+    "name": "Dholen",
+    "unlock_price": 1250,
+    "distance": 15,
+    "yields": {"Iron": 80, "Lead": 20}
+  },
+  "5": {
+    "name": "Verr",
+    "unlock_price": 5000,
+    "distance": 16,
+    "yields": {"Lead": 50, "Iron": 30, "Copper": 20}
+  },
+  "6": {
+    "name": "Newton",
+    "unlock_price": 9000,
+    "distance": 18,
+    "yields": {"Lead": 100}
+  },
+  "7": {
+    "name": "Widow",
+    "unlock_price": 15000,
+    "distance": 20,
+    "yields": {"Iron": 40, "Copper": 40, "Silica": 20}
+  },
+  "8": {
+    "name": "Acheron",
+    "unlock_price": 25000,
+    "distance": 22,
+    "yields": {"Silica": 60, "Copper": 40}
+  },
+  "9": {
+    "name": "Yangtze",
+    "unlock_price": 40000,
+    "distance": 23,
+    "yields": {"Silica": 80, "Aluminium": 20}
+  },
+  "10": {
+    "name": "Solveig",
+    "unlock_price": 75000,
+    "distance": 25,
+    "yields": {"Aluminium": 50, "Silica": 30, "Lead": 20}
+  }
+}

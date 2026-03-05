@@ -100,6 +100,7 @@ _SEED_LOGGED = set()
 
 def planet_module(planets: int = 15):
     reset_ui()
+    cash_warned = False
     if PLANETS:
         planet_ids = sorted(int(k) for k in PLANETS.keys() if str(k).isdigit())
     else:
@@ -318,27 +319,35 @@ def planet_module(planets: int = 15):
                     print(f"[OPT] p={planet_id} invalid stat={cand['stat']}; skipping")
                     continue
 
-                unlock_price = get_unlock_price(planet_id)
-                if unlock_price is None:
-                    print(f"[OPT] p={planet_id} stat={cand['stat']} skip: missing unlock_price")
-                    continue
-                current_level = getattr(before, attr)
-                cost = optimizer.upgrade_cost(unlock_price, current_level)
                 cash = read_hud_cash()
                 if cash is None:
-                    print(f"[OPT] p={planet_id} stat={cand['stat']} skip: cash OCR failed")
-                    continue
-                if cash < cost:
-                    deficit = cost - cash
-                    print(f"[OPT] p={planet_id} stat={cand['stat']} skip: cash={cash} < cost={cost:.2f} deficit={deficit:.2f}")
-                    continue
+                    if not cash_warned:
+                        print("[PLANET] cash OCR unavailable; using cyan afford check only")
+                        cash_warned = True
+                else:
+                    unlock_price = get_unlock_price(planet_id)
+                    if unlock_price is None:
+                        print(f"[OPT] p={planet_id} stat={cand['stat']} skip: missing unlock_price")
+                        continue
+                    current_level = getattr(before, attr)
+                    cost = optimizer.upgrade_cost(unlock_price, current_level)
+                    if cash < cost:
+                        deficit = cost - cash
+                        print(f"[OPT] p={planet_id} stat={cand['stat']} skip: cash={cash} < cost={cost:.2f} deficit={deficit:.2f}")
+                        continue
 
                 if not afford_fn():
-                    print(f"[OPT] p={planet_id} stat={cand['stat']} skip: cyan=False despite cash>=cost cash={cash} cost={cost:.2f}")
+                    if cash is None:
+                        print(f"[OPT] p={planet_id} stat={cand['stat']} skip: cyan=False (cash OCR unavailable)")
+                    else:
+                        print(f"[OPT] p={planet_id} stat={cand['stat']} skip: cyan=False despite cash>=cost cash={cash} cost={cost:.2f}")
                     continue
 
                 tap(key, KEY_DELAY)
-                print(f"[OPT] p={planet_id} stat={cand['stat']} click: cash={cash} cost={cost:.2f} lvl={current_level}")
+                if cash is None:
+                    print(f"[OPT] p={planet_id} stat={cand['stat']} click: cash=UNKNOWN")
+                else:
+                    print(f"[OPT] p={planet_id} stat={cand['stat']} click: cash={cash} cost={cost:.2f} lvl={current_level}")
                 time.sleep(config.PLANET_OCR_RETRY_DELAY)
 
                 after = read_levels_with_retry(planet_id)

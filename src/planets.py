@@ -1,12 +1,13 @@
 import time
-import config
+
 import analytics
+import config
 import roi
-from data_store import PLANETS
 from config import KEY_DELAY, MENU_DELAY, SCROLL_DELAY
+from data_store import PLANETS
 from input_utils import tap
 from ocr_snap import read_planet_levels
-from signals import mining_available, speed_available, cargo_available
+from signals import cargo_available, mining_available, speed_available
 
 def mine_rate(level: int) -> float:
     n = max(0, level - 1)
@@ -118,9 +119,26 @@ def planet_module(planets: int = 15):
             tap("-", KEY_DELAY)
         time.sleep(MENU_DELAY)
 
+    def maybe_resync_levels_for_current_planet(levels: dict, planet_index: int) -> bool:
+        if not (mining_available() or speed_available() or cargo_available()):
+            print(f"[PLANET] p={planet_index} not on upgrade panel; skipping")
+            return False
+        ui_levels = read_planet_levels("PLANET_STATS_PANEL")
+        if not ui_levels:
+            print(f"[PLANET] p={planet_index} level OCR failed; skipping")
+            return False
+        levels["m"] = ui_levels.mining
+        levels["s"] = ui_levels.speed
+        levels["c"] = ui_levels.cargo
+        print(f"[PLANET] p={planet_index} levels m={levels['m']} s={levels['s']} c={levels['c']}")
+        return True
+
     def run_governor_pass():
         for planet_index in planet_ids:
             levels = planet_levels[planet_index]
+            if not maybe_resync_levels_for_current_planet(levels, planet_index):
+                tap("=", SCROLL_DELAY)    # next planet
+                continue
             base_speed = planet_base_speed[planet_index]
             decision, cycle_seconds, prod_per_cycle, cap_per_cycle, fill_ratio = choose_upgrade_governor(
                 planet_index, levels, base_speed
@@ -189,15 +207,9 @@ def planet_module(planets: int = 15):
     for planet_index in planet_ids:
         levels = planet_levels[planet_index]
         base_speed = planet_base_speed[planet_index]
-        ui_levels = read_planet_levels("PLANET_STATS_PANEL")
-        if not ui_levels:
-            print(f"[PLANET] p={planet_index} level OCR failed; skipping")
+        if not maybe_resync_levels_for_current_planet(levels, planet_index):
             tap("=", SCROLL_DELAY)    # next planet
             continue
-        levels["m"] = ui_levels.mining
-        levels["s"] = ui_levels.speed
-        levels["c"] = ui_levels.cargo
-        print(f"[PLANET] p={planet_index} levels m={levels['m']} s={levels['s']} c={levels['c']}")
         cycle = config.PLANET_CYCLE_SECONDS.get(planet_index, config.DEFAULT_CYCLE_SECONDS)
         if cycle is not None:
             prod_cycle = analytics.production_per_cycle(levels["m"], cycle)

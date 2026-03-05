@@ -270,7 +270,12 @@ def planet_module(planets: int = 15):
         reset_to_first_planet()
         for planet_index in planet_ids:
             levels = planet_levels[planet_index]
-            for cand in selected_by_planet.get(planet_index, []):
+            selections = selected_by_planet.get(planet_index, [])
+            if selections:
+                if not maybe_resync_levels_for_current_planet(levels, planet_index):
+                    tap("=", SCROLL_DELAY)    # next planet
+                    continue
+            for cand in selections:
                 stat = cand["stat"]
                 if stat == "M":
                     available = mining_available()

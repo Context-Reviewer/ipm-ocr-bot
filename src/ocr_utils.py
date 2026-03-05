@@ -23,13 +23,29 @@ def preprocess(img):
     dilated = cv2.dilate(arr, kernel, iterations=1)
     return Image.fromarray(dilated)
 
+_SUFFIX_MULTS = {
+    "K": 1_000,
+    "M": 1_000_000,
+    "B": 1_000_000_000,
+    "T": 1_000_000_000_000,
+    "q": 1_000_000_000_000_000,
+    "Q": 1_000_000_000_000_000_000,
+    "s": 1_000_000_000_000_000_000_000,
+    "S": 1_000_000_000_000_000_000_000_000,
+    "O": 1_000_000_000_000_000_000_000_000_000,
+    "k": 1_000,
+    "m": 1_000_000,
+    "b": 1_000_000_000,
+    "t": 1_000_000_000_000,
+}
+
 def parse_qty(text):
     if text is None:
         return None
-    cleaned = text.strip().replace(",", "").replace(" ", "").replace("\n", "")
+    cleaned = text.strip().replace(",", "").replace(" ", "").replace("\n", "").replace("$", "")
     if not cleaned:
         return None
-    match = re.search(r"(\d+(?:\.\d+)?)([KMBkmb]?)", cleaned)
+    match = re.search(r"(\d+(?:\.\d+)?)([KMBTqQsSOkmbt]?)", cleaned)
     if not match:
         return None
     num_str, suffix = match.groups()
@@ -37,15 +53,24 @@ def parse_qty(text):
         value = float(num_str)
     except ValueError:
         return None
-    mult = 1
-    if suffix:
-        s = suffix.lower()
-        if s == "k":
-            mult = 1_000
-        elif s == "m":
-            mult = 1_000_000
-        elif s == "b":
-            mult = 1_000_000_000
+    mult = _SUFFIX_MULTS.get(suffix, 1)
+    return int(value * mult)
+
+def parse_compact_number(text):
+    if text is None:
+        return None
+    cleaned = text.strip().replace(",", "").replace(" ", "").replace("\n", "").replace("$", "")
+    if not cleaned:
+        return None
+    match = re.search(r"(\d+(?:\.\d+)?)([KMBTqQsSOkmbt]?)", cleaned)
+    if not match:
+        return None
+    num_str, suffix = match.groups()
+    try:
+        value = float(num_str)
+    except ValueError:
+        return None
+    mult = _SUFFIX_MULTS.get(suffix, 1)
     return int(value * mult)
 
 def ocr_qty_once(bbox):

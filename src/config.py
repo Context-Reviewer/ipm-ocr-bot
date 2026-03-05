@@ -121,6 +121,8 @@ ORES_PAGE_SCROLL_SETTLE_DELAY = 0.25
 ENABLE_ORE_OCR = True
 TESSERACT_CMD = r"C:\Program Files\Tesseract-OCR\tesseract.exe"  # leave empty to use PATH; optional override if needed
 OCR_SNAP_DEBUG = False  # set True to save OCR debug crops
+# HUD cash bbox: (x, y, w, h) - TODO calibrate for your screen
+RECT_HUD_CASH = (0, 0, 0, 0)
 # Planet stats panel bbox: (x, y, w, h)
 PLANET_STATS_PANEL = (1443, 697, 149, 263)
 PLANET_SWITCH_DELAY = 0.20

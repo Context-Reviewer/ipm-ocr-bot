@@ -11,7 +11,7 @@ import pytesseract
 from PIL import Image
 
 import config
-from ocr_utils import grab_bbox
+from ocr_utils import grab_bbox, parse_compact_number
 
 if config.TESSERACT_CMD:
     pytesseract.pytesseract.tesseract_cmd = config.TESSERACT_CMD
@@ -129,6 +129,18 @@ def read_planet_levels(panel_label: str = "PLANET_STATS_PANEL") -> Optional[Plan
         vals.append(v)
 
     return PlanetLevels(mining=vals[0], speed=vals[1], cargo=vals[2])
+
+def read_hud_cash() -> Optional[int]:
+    bbox = getattr(config, "RECT_HUD_CASH", None)
+    if not bbox:
+        return None
+    img = grab_bbox(bbox)
+    bgr = _to_bgr(img)
+    _maybe_save("HUD_CASH_raw.png", bgr)
+    bw = _prep_text(bgr, scale=3)
+    _maybe_save("HUD_CASH_bw.png", bw)
+    txt = _ocr_text(bw, psm=7, whitelist="0123456789.,$KMBTqQsSO")
+    return parse_compact_number(txt)
 
 
 def read_planet_resource_table() -> Optional[list[dict]]:

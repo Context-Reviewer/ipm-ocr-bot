@@ -2,7 +2,7 @@ import time
 import config
 import policy
 from config import KEY_DELAY, MENU_DELAY, SCROLL_DELAY
-from input_utils import tap
+from input_utils import tap, reset_ui
 from signals import mean_abs_diff
 from ocr_utils import ocr_qty_median
 
@@ -142,4 +142,5 @@ def ore_module(pages: int = 2):
     # Close resources
     tap("shift+1", MENU_DELAY)
     tap("shift+1", MENU_DELAY)
+    reset_ui()
     return {"sold_any": sold_any, "sold_rows": sold_rows}

@@ -6,8 +6,8 @@ import optimizer
 import policy
 from config import KEY_DELAY, MENU_DELAY, SCROLL_DELAY
 from data_store import PLANETS
-from input_utils import tap
-from ocr_snap import read_planet_levels
+from input_utils import tap, reset_ui
+from ocr_snap import read_hud_cash, read_planet_levels
 from signals import cargo_available, mining_available, speed_available
 
 def mine_rate(level: int) -> float:
@@ -84,9 +84,22 @@ def choose_upgrade_governor(planet_index: int, levels: dict, base_speed_level: i
 
     return None, cycle_seconds, prod_per_cycle, cap_per_cycle, fill_ratio
 
+def get_unlock_price(planet_id: int):
+    if isinstance(PLANETS, dict):
+        cfg = PLANETS.get(str(planet_id)) or PLANETS.get(planet_id)
+        if isinstance(cfg, dict):
+            unlock_price = cfg.get("unlock_price")
+            if isinstance(unlock_price, (int, float)) and unlock_price > 0:
+                return float(unlock_price)
+    fallback = config.PLANET_UNLOCK_PRICE.get(planet_id)
+    if isinstance(fallback, (int, float)) and fallback > 0:
+        return float(fallback)
+    return None
+
 _SEED_LOGGED = set()
 
 def planet_module(planets: int = 15):
+    reset_ui()
     if PLANETS:
         planet_ids = sorted(int(k) for k in PLANETS.keys() if str(k).isdigit())
     else:
@@ -305,11 +318,27 @@ def planet_module(planets: int = 15):
                     print(f"[OPT] p={planet_id} invalid stat={cand['stat']}; skipping")
                     continue
 
+                unlock_price = get_unlock_price(planet_id)
+                if unlock_price is None:
+                    print(f"[OPT] p={planet_id} stat={cand['stat']} skip: missing unlock_price")
+                    continue
+                current_level = getattr(before, attr)
+                cost = optimizer.upgrade_cost(unlock_price, current_level)
+                cash = read_hud_cash()
+                if cash is None:
+                    print(f"[OPT] p={planet_id} stat={cand['stat']} skip: cash OCR failed")
+                    continue
+                if cash < cost:
+                    deficit = cost - cash
+                    print(f"[OPT] p={planet_id} stat={cand['stat']} skip: cash={cash} < cost={cost:.2f} deficit={deficit:.2f}")
+                    continue
+
                 if not afford_fn():
-                    print(f"[OPT] p={planet_id} stat={cand['stat']} not affordable (cyan); skipping")
+                    print(f"[OPT] p={planet_id} stat={cand['stat']} skip: cyan=False despite cash>=cost cash={cash} cost={cost:.2f}")
                     continue
 
                 tap(key, KEY_DELAY)
+                print(f"[OPT] p={planet_id} stat={cand['stat']} click: cash={cash} cost={cost:.2f} lvl={current_level}")
                 time.sleep(config.PLANET_OCR_RETRY_DELAY)
 
                 after = read_levels_with_retry(planet_id)

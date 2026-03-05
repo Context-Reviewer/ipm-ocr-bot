@@ -64,7 +64,10 @@ def ore_module(pages: int = 2):
         print("[ORES] top latch failed")
     time.sleep(config.ORES_RESET_SETTLE_DELAY)
 
-    row_keys = [str(i) for i in range(1, config.ORES_ROWS_TO_PROCESS + 1)]
+    rows = min(len(config.ORE_ROW_MAP), config.VISIBLE_ORE_ROWS)
+    if len(config.ORE_ROW_MAP) > config.VISIBLE_ORE_ROWS:
+        print(f"[ORES] ores_unlocked={len(config.ORE_ROW_MAP)} > visible={config.VISIBLE_ORE_ROWS}; skipping rows beyond visible (fail-closed)")
+    row_keys = [str(i) for i in range(1, rows + 1)]
     scroll_key = config.ORES_SCROLL_DOWN_KEY  # BlueStacks swipe down
 
     for page in range(pages):

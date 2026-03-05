@@ -178,6 +178,7 @@ ORE_ROW_MAP = {
 # Ores processing
 ORE_QTY_STRIP_ROWS = len(ORE_ROW_MAP)
 ORES_ROWS_TO_PROCESS = len(ORE_ROW_MAP)
+VISIBLE_ORE_ROWS = 5  # current UI shows 5 ores without scrolling
 
 # Slider preset fractions (must match your mappings)
 ORE_SLIDER_PRESETS = [

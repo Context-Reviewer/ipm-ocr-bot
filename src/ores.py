@@ -1,10 +1,18 @@
 import time
+import numpy as np
 import config
 import policy
+import ocr
 from config import KEY_DELAY, MENU_DELAY, SCROLL_DELAY
 from input_utils import tap, reset_ui
-from signals import mean_abs_diff
-from ocr_utils import ocr_qty_median
+from signals import sample_rect
+
+def mean_abs_diff(rect, prev_pixels):
+    curr = sample_rect(rect)
+    if prev_pixels is None or curr.size == 0:
+        return (1e9, curr)
+    diff = float(np.mean(np.abs(curr.astype(np.int16) - prev_pixels.astype(np.int16))))
+    return (diff, curr)
 
 def select_ore(ore_name: str) -> bool:
     key = config.ORE_SELECT_KEYS.get(ore_name)
@@ -46,13 +54,7 @@ def qty_bbox_for_row(row_index: int):
 
 def debug_read_qty_for_row(row_index: int):
     bbox = qty_bbox_for_row(row_index)
-    qty = ocr_qty_median(
-        bbox,
-        samples=config.ORE_QTY_SAMPLES,
-        delay=config.ORE_QTY_SAMPLE_DELAY,
-        min_valid=config.ORE_QTY_MIN_VALID_SAMPLES,
-        max_rel_spread=config.ORE_QTY_MAX_REL_SPREAD,
-    )
+    qty = ocr.ocr_read_number(bbox, mode="ore_qty", debug_tag=f"ore_row{row_index}")
     return (bbox, qty)
 
 def ore_module(pages: int = 2):
@@ -88,13 +90,7 @@ def ore_module(pages: int = 2):
                 time.sleep(MENU_DELAY)
                 sell_start = config.ORE_SELL_START_BY_ROW.get(row_index, config.ORE_SELL_START_DEFAULT)
                 bbox = qty_bbox_for_row(row_index)
-                qty = ocr_qty_median(
-                    bbox,
-                    samples=config.ORE_QTY_SAMPLES,
-                    delay=config.ORE_QTY_SAMPLE_DELAY,
-                    min_valid=config.ORE_QTY_MIN_VALID_SAMPLES,
-                    max_rel_spread=config.ORE_QTY_MAX_REL_SPREAD,
-                )
+                qty = ocr.ocr_read_number(bbox, mode="ore_qty", debug_tag=f"ore_row{row_index}")
                 if qty is None:
                     print(f"[ORES] row={row_index} qty OCR failed after y-scan y={bbox[1]} bbox={bbox} offsets={config.OCR_QTY_Y_OFFSETS}; skipping row")
                     continue

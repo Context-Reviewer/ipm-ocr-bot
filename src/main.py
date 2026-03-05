@@ -21,7 +21,7 @@ import input_utils
 from input_utils import reset_ui, tap
 from planets import planet_module
 from ores import ore_module, debug_read_qty_for_row, qty_bbox_for_row
-from ocr_utils import ocr_qty_median, grab_bbox, preprocess
+import ocr
 
 RUNNING = False
 DEBUG_KEYS = "--debug-keys" in sys.argv
@@ -76,13 +76,7 @@ def selftest():
     print("SELFTEST DONE")
 
 def ocr_calibration():
-    qty = ocr_qty_median(
-        config.ORE_QTY_BBOX,
-        samples=config.ORE_QTY_SAMPLES,
-        delay=config.ORE_QTY_SAMPLE_DELAY,
-        min_valid=config.ORE_QTY_MIN_VALID_SAMPLES,
-        max_rel_spread=config.ORE_QTY_MAX_REL_SPREAD,
-    )
+    qty = ocr.ocr_read_number(config.ORE_QTY_BBOX, mode="ore_qty", debug_tag="ore_calibration")
     print(f"[OCR] ore qty median = {qty}")
 
 def debug_ocr_rows():
@@ -95,12 +89,15 @@ def debug_save_crops():
     ts = time.strftime("%Y%m%d_%H%M%S")
     for i in range(1, config.ORES_ROWS_TO_PROCESS + 1):
         bbox = qty_bbox_for_row(i)
-        raw = grab_bbox(bbox)
-        bw = preprocess(raw)
+        raw, _meta = ocr.capture_bbox(bbox)
+        bw = ocr.preprocess_for_mode(raw, "ore_qty")
         raw_path = os.path.join("out", f"qty_row{i}_raw_{ts}.png")
         bw_path = os.path.join("out", f"qty_row{i}_bw_{ts}.png")
-        raw.save(raw_path)
-        bw.save(bw_path)
+        if raw is not None:
+            raw.save(raw_path)
+        if bw is not None:
+            from PIL import Image
+            Image.fromarray(bw).save(bw_path)
     print("[DBG OCR] crops saved")
 
 keyboard.add_hotkey("f9", toggle)

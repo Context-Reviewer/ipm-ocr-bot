@@ -28,6 +28,7 @@ DEBUG_KEYS = "--debug-keys" in sys.argv
 TASK_ORDER = ["planets", "ores"]
 next_at = {name: 0.0 for name in TASK_ORDER}
 last_heartbeat = 0.0
+task_ctx = {"last_ores": None}
 
 if DEBUG_KEYS:
     input_utils.DEBUG = True
@@ -138,7 +139,12 @@ try:
                     if name == "planets":
                         planet_module(planets=config.PLANETS_PER_TICK)
                     elif name == "ores":
-                        ore_module(pages=config.ORE_PAGES_PER_TICK)
+                        result = ore_module(pages=config.ORE_PAGES_PER_TICK)
+                        task_ctx["last_ores"] = result
+                        if result and result.get("sold_any") and config.TASKS.get("planets", {}).get("enabled", False):
+                            soon = time.monotonic() + 5.0
+                            next_at["planets"] = min(next_at.get("planets", soon), soon)
+                            print(f"[TASK] ores sold; planets scheduled sooner at +5s")
                     print(f"[TASK] {name} done")
                     next_at[name] = time.monotonic() + task_cfg.get("every", 0)
 

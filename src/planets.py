@@ -2,7 +2,8 @@ import time
 
 import analytics
 import config
-import roi
+import optimizer
+import policy
 from config import KEY_DELAY, MENU_DELAY, SCROLL_DELAY
 from data_store import PLANETS
 from input_utils import tap
@@ -119,14 +120,29 @@ def planet_module(planets: int = 15):
             tap("-", KEY_DELAY)
         time.sleep(MENU_DELAY)
 
-    def maybe_resync_levels_for_current_planet(levels: dict, planet_index: int) -> bool:
+    def go_to_planet(target_id: int) -> bool:
+        reset_to_first_planet()
+        for pid in planet_ids:
+            if pid == target_id:
+                return True
+            tap("=", SCROLL_DELAY)
+            time.sleep(config.PLANET_SWITCH_DELAY)
+        return False
+
+    def read_levels_with_retry(planet_index: int):
         ui_levels = read_planet_levels("PLANET_STATS_PANEL")
         if not ui_levels:
             time.sleep(config.PLANET_OCR_RETRY_DELAY)
             ui_levels = read_planet_levels("PLANET_STATS_PANEL")
-            if not ui_levels:
-                print(f"[PLANET] p={planet_index} level OCR failed; skipping")
-                return False
+        if not ui_levels:
+            print(f"[PLANET] p={planet_index} level OCR failed; skipping")
+            return None
+        return ui_levels
+
+    def maybe_resync_levels_for_current_planet(levels: dict, planet_index: int) -> bool:
+        ui_levels = read_levels_with_retry(planet_index)
+        if not ui_levels:
+            return False
         levels["m"] = ui_levels.mining
         levels["s"] = ui_levels.speed
         levels["c"] = ui_levels.cargo
@@ -201,17 +217,17 @@ def planet_module(planets: int = 15):
     # Reset left a bunch so we're near planet 1
     reset_to_first_planet()
 
-    candidates = []
+    levels_by_planet = {}
     dashboard_rows = []
 
-    # Pass 1: gather ROI candidates + analytics logging
+    # Pass 1: gather levels + analytics logging
     for planet_index in planet_ids:
         levels = planet_levels[planet_index]
-        base_speed = planet_base_speed[planet_index]
         if not maybe_resync_levels_for_current_planet(levels, planet_index):
             tap("=", SCROLL_DELAY)    # next planet
             time.sleep(config.PLANET_SWITCH_DELAY)
             continue
+        levels_by_planet[planet_index] = {"m": levels["m"], "s": levels["s"], "c": levels["c"]}
         cycle = config.PLANET_CYCLE_SECONDS.get(planet_index, config.DEFAULT_CYCLE_SECONDS)
         if cycle is not None:
             prod_cycle = analytics.production_per_cycle(levels["m"], cycle)
@@ -232,13 +248,6 @@ def planet_module(planets: int = 15):
                     d_c = impact["C"] - fill
                     d_s = impact["S"] - fill
                     print(f"[IMPACT] p={planet_index} ΔM={d_m:.4f} ΔC={d_c:.4f} ΔS={d_s:.4f}")
-
-        cyan_m = mining_available()
-        cyan_s = speed_available()
-        cyan_c = cargo_available()
-        cyan_flags = {"M": cyan_m, "S": cyan_s, "C": cyan_c}
-        levels_for_roi = {"m": levels["m"], "s": levels["s"], "c": levels["c"], "s_base": base_speed}
-        candidates.extend(roi.planet_candidates(planet_index, levels_for_roi, cyan_flags))
         tap("=", SCROLL_DELAY)    # next planet
         time.sleep(config.PLANET_SWITCH_DELAY)
 
@@ -248,65 +257,74 @@ def planet_module(planets: int = 15):
         for p, m, s, c, prod_cycle, cargo, fill in dashboard_rows:
             print(f"{p:<6} | {m:<2} | {s:<2} | {c:<2} | {prod_cycle:>10.2f} | {cargo:>5.2f} | {fill:>4.2f}")
 
-    boost_logged = set()
-    for c in candidates:
-        if c.get("boost") and c["planet"] not in boost_logged:
-            print(f"[ROI] boost applied p={c['planet']} factor={c['boost']}")
-            boost_logged.add(c["planet"])
-
-    viable = [c for c in candidates if c.get("roi") is not None and c["roi"] >= config.MIN_ROI_TO_SPEND]
-    if not viable:
-        print("[ROI] no viable candidates; falling back to existing governor/pattern")
-        reset_to_first_planet()
-        run_governor_pass()
+    candidates = optimizer.choose_best_upgrades(levels_by_planet, PLANETS, top_n=3)
+    if not candidates:
+        print("[OPT] no viable candidates; skipping upgrades")
     else:
-        stat_order = {"M": 0, "C": 1, "S": 2}
-        viable.sort(key=lambda c: (-c["roi"], c["planet"], stat_order.get(c["stat"], 9)))
-        selected = viable[: config.MAX_UPGRADES_PER_PLANET_TASK]
-        for c in selected:
-            print(f"[ROI] top: p={c['planet']} stat={c['stat']} roi={c['roi']:.6g} dRev={c['delta_rev']:.4f} cost={c['cost']:.2f}")
+        gated = []
+        saving_mode = bool(getattr(config, "ECON_SAVING_MODE", False)) and bool(getattr(config, "ECON_ENABLED", True))
+        if saving_mode:
+            print("[POLICY] saving_mode=ON")
+        for c in candidates:
+            if policy.allow_upgrade(c, config):
+                gated.append(c)
+            else:
+                print(f"[POLICY] skip p={c['planet_id']} stat={c['stat']} roi={c['roi']:.6g}")
 
-        selected_by_planet = {}
-        for c in selected:
-            selected_by_planet.setdefault(c["planet"], []).append(c)
+        if not gated:
+            if saving_mode:
+                print("[POLICY] saving_mode blocked upgrades; skipping")
+            else:
+                print("[OPT] no candidates after policy gating; skipping upgrades")
+        else:
+            for c in gated:
+                print(
+                    f"[OPT] top: p={c['planet_id']} stat={c['stat']} roi={c['roi']:.6g} "
+                    f"delta={c['delta']:.4f} cost={c['cost']:.2f}"
+                )
 
-        reset_to_first_planet()
-        for planet_index in planet_ids:
-            levels = planet_levels[planet_index]
-            selections = selected_by_planet.get(planet_index, [])
-            if selections:
-                if not maybe_resync_levels_for_current_planet(levels, planet_index):
-                    tap("=", SCROLL_DELAY)    # next planet
-                    time.sleep(config.PLANET_SWITCH_DELAY)
+            stat_key = {"M": "ctrl+1", "S": "ctrl+2", "C": "ctrl+3"}
+            stat_attr = {"M": "mining", "S": "speed", "C": "cargo"}
+            stat_afford = {"M": mining_available, "S": speed_available, "C": cargo_available}
+
+            for cand in gated:
+                planet_id = cand["planet_id"]
+                if not go_to_planet(planet_id):
+                    print(f"[OPT] p={planet_id} navigation failed; skipping")
                     continue
-            for cand in selections:
-                stat = cand["stat"]
-                if stat == "M":
-                    available = mining_available()
-                    if available:
-                        tap("ctrl+1", KEY_DELAY)
-                        levels["m"] += 1
-                        print(f"[PLANET] exec p={planet_index} stat=M roi={cand['roi']:.4f} cost={cand['cost']:.2f}")
-                    else:
-                        print(f"[PLANET] exec p={planet_index} stat=M but mining not available (cyan={available}); skipping fail-closed")
-                elif stat == "S":
-                    available = speed_available()
-                    if available:
-                        tap("ctrl+2", KEY_DELAY)
-                        levels["s"] += 1
-                        print(f"[PLANET] exec p={planet_index} stat=S roi={cand['roi']:.4f} cost={cand['cost']:.2f}")
-                    else:
-                        print(f"[PLANET] exec p={planet_index} stat=S but speed not available (cyan={available}); skipping fail-closed")
-                elif stat == "C":
-                    available = cargo_available()
-                    if available:
-                        tap("ctrl+3", KEY_DELAY)
-                        levels["c"] += 1
-                        print(f"[PLANET] exec p={planet_index} stat=C roi={cand['roi']:.4f} cost={cand['cost']:.2f}")
-                    else:
-                        print(f"[PLANET] exec p={planet_index} stat=C but cargo not available (cyan={available}); skipping fail-closed")
-            tap("=", SCROLL_DELAY)    # next planet
-            time.sleep(config.PLANET_SWITCH_DELAY)
+                time.sleep(config.PLANET_SWITCH_DELAY)
+
+                before = read_levels_with_retry(planet_id)
+                if not before:
+                    continue
+
+                key = stat_key.get(cand["stat"])
+                attr = stat_attr.get(cand["stat"])
+                afford_fn = stat_afford.get(cand["stat"])
+                if not key or not attr or not afford_fn:
+                    print(f"[OPT] p={planet_id} invalid stat={cand['stat']}; skipping")
+                    continue
+
+                if not afford_fn():
+                    print(f"[OPT] p={planet_id} stat={cand['stat']} not affordable (cyan); skipping")
+                    continue
+
+                tap(key, KEY_DELAY)
+                time.sleep(config.PLANET_OCR_RETRY_DELAY)
+
+                after = read_levels_with_retry(planet_id)
+                if not after:
+                    continue
+
+                before_val = getattr(before, attr)
+                after_val = getattr(after, attr)
+                if after_val == before_val + 1:
+                    print(f"[OPT] exec p={planet_id} stat={cand['stat']} ok {before_val}->{after_val}")
+                else:
+                    print(
+                        f"[OPT] exec p={planet_id} stat={cand['stat']} failed "
+                        f"{before_val}->{after_val}"
+                    )
 
     # Exit planet menu (your known escape)
     tap("shift+1", MENU_DELAY)

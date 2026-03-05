@@ -1,5 +1,6 @@
 import time
 import config
+import policy
 from config import KEY_DELAY, MENU_DELAY, SCROLL_DELAY
 from input_utils import tap
 from signals import mean_abs_diff
@@ -59,10 +60,15 @@ def ore_module(pages: int = 2):
     tap("shift+1", MENU_DELAY)
     tap("f1", MENU_DELAY)  # ores tab
 
+    sold_any = False
+    sold_rows = 0
+
     # Reset to top (safe even if already at top)
     if not scroll_to_top():
         print("[ORES] top latch failed")
     time.sleep(config.ORES_RESET_SETTLE_DELAY)
+
+    reservations = policy.compute_reservations(None, config)
 
     rows = min(len(config.ORE_ROW_MAP), config.VISIBLE_ORE_ROWS)
     if len(config.ORE_ROW_MAP) > config.VISIBLE_ORE_ROWS:
@@ -80,7 +86,6 @@ def ore_module(pages: int = 2):
             tap(key, KEY_DELAY)
             if config.ENABLE_ORE_OCR:
                 time.sleep(MENU_DELAY)
-                reserve = config.ORE_RESERVE_BY_ROW.get(row_index, config.ORE_RESERVE_DEFAULT)
                 sell_start = config.ORE_SELL_START_BY_ROW.get(row_index, config.ORE_SELL_START_DEFAULT)
                 bbox = qty_bbox_for_row(row_index)
                 qty = ocr_qty_median(
@@ -96,10 +101,16 @@ def ore_module(pages: int = 2):
                 if qty < sell_start:
                     print(f"[ORES] row={row_index} qty={qty} < sell_start={sell_start}; skipping")
                     continue
+                actions = policy.decide_ore_sales({ore_name: qty}, reservations, config)
+                action = actions[0] if actions else None
+                if not action:
+                    print(f"[ORES] row={row_index} ore={ore_name} qty={qty} reserved={reservations.get(ore_name, 0)}; skipping")
+                    continue
                 target = config.ORE_SELL_TARGET_DEFAULT
-                allowed_to_sell = max(0, qty - target)
+                reserved = reservations.get(ore_name, 0)
+                allowed_to_sell = max(0, qty - max(target, reserved))
                 if allowed_to_sell <= 0:
-                    print(f"[ORES] row={row_index} qty={qty} <= target={target}; skipping")
+                    print(f"[ORES] row={row_index} ore={ore_name} qty={qty} allowed={allowed_to_sell}; skipping")
                     continue
                 desired_fraction = allowed_to_sell / qty
                 preset = None
@@ -107,18 +118,22 @@ def ore_module(pages: int = 2):
                     if fraction <= desired_fraction:
                         preset = key_name
                 if preset is None:
-                    print(f"[ORES] row={row_index} qty={qty} target={target} allowed={allowed_to_sell} desired={desired_fraction:.2f} preset=None; skipping")
+                    print(f"[ORES] row={row_index} ore={ore_name} qty={qty} allowed={allowed_to_sell} desired={desired_fraction:.2f} preset=None; skipping")
                     continue
-                print(f"[ORES] row={row_index} qty={qty} target={target} allowed={allowed_to_sell} desired={desired_fraction:.2f} preset={preset}")
+                print(f"[ORES] row={row_index} ore={ore_name} qty={qty} allowed={allowed_to_sell} desired={desired_fraction:.2f} preset={preset}")
                 tap(config.SELL_PRESET_25_KEY, KEY_DELAY)
                 time.sleep(config.SELL_PRESET_APPLY_DELAY)
                 tap(preset, KEY_DELAY)  # set slider
                 time.sleep(config.SELL_PRESET_APPLY_DELAY)
                 tap(config.SELL_CONFIRM_KEY, KEY_DELAY)  # execute sell
+                sold_any = True
+                sold_rows += 1
                 continue
             tap("\\", KEY_DELAY)  # open sell
             tap("'", KEY_DELAY)  # slider to ~100%
             tap("\\", KEY_DELAY)  # execute sell
+            sold_any = True
+            sold_rows += 1
 
         if page < pages - 1:
             tap(scroll_key, SCROLL_DELAY)
@@ -127,3 +142,4 @@ def ore_module(pages: int = 2):
     # Close resources
     tap("shift+1", MENU_DELAY)
     tap("shift+1", MENU_DELAY)
+    return {"sold_any": sold_any, "sold_rows": sold_rows}

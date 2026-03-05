@@ -4,6 +4,9 @@ __pycache__/
 *.pyo
 *.pyd
 *.log
-out/
+# runtime / debug output
 src/out/
+out/
+
+# temp scratch only (canonical seeds in data/ stay versioned)
 data/tmp/

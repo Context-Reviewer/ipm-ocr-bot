@@ -13,12 +13,16 @@ import pytesseract
 from PIL import Image, ImageGrab, ImageOps
 
 import config
+from rect_store import RectStore
+from window_win32 import get_bluestacks_client_rect
 
 if config.TESSERACT_CMD:
     pytesseract.pytesseract.tesseract_cmd = config.TESSERACT_CMD
 
 _OUT_DIR = Path(__file__).resolve().parent / "out"
 _OUT_DIR.mkdir(exist_ok=True)
+
+_RECT_STORE: RectStore | None = None
 
 _SUFFIX_MULTS = {
     "K": 1_000,
@@ -69,10 +73,51 @@ def _debug_save(mode: str, bbox, step: str, img, tag: str | None = None) -> None
         cv2.imwrite(str(_OUT_DIR / name), img)
 
 
+def _load_rects() -> RectStore | None:
+    global _RECT_STORE
+    if _RECT_STORE is not None:
+        return _RECT_STORE
+    path = Path(getattr(config, "RECTS_JSON_PATH", "rects.json"))
+    if not path.exists():
+        return None
+    _RECT_STORE = RectStore.load(path)
+    return _RECT_STORE
+
+
+def rel_to_screen_bbox(rel_bbox, title_hint: str = "BlueStacks App Player"):
+    c = get_bluestacks_client_rect(title_hint)
+    if not c:
+        return None
+    x, y, w, h = rel_bbox
+    return (c.left + x, c.top + y, w, h)
+
+
+def _resolve_bbox(bbox):
+    title_hint = getattr(config, "BLUESTACKS_TITLE_HINT", "BlueStacks App Player")
+    if isinstance(bbox, str):
+        store = _load_rects()
+        if store is None:
+            return None, "rects_missing"
+        rect = store.rects.get(bbox)
+        if rect is None:
+            return None, "rect_not_found"
+        screen_bbox = rel_to_screen_bbox(rect, title_hint=title_hint)
+        return (screen_bbox, "ok") if screen_bbox else (None, "client_not_found")
+
+    if isinstance(bbox, (tuple, list)) and len(bbox) == 4:
+        if getattr(config, "RECTS_USE_CLIENT", False):
+            screen_bbox = rel_to_screen_bbox(bbox, title_hint=title_hint)
+            return (screen_bbox, "ok") if screen_bbox else (None, "client_not_found")
+        return bbox, "ok"
+
+    return None, "invalid_bbox"
+
+
 def capture_bbox(bbox) -> tuple[Optional[Image.Image], dict]:
-    if not isinstance(bbox, (tuple, list)) or len(bbox) != 4:
-        return None, {"ok": False, "reason": "invalid_bbox"}
-    x, y, w, h = bbox
+    resolved, reason = _resolve_bbox(bbox)
+    if not resolved:
+        return None, {"ok": False, "reason": reason}
+    x, y, w, h = resolved
     try:
         if int(w) <= 0 or int(h) <= 0:
             return None, {"ok": False, "reason": "zero_size"}

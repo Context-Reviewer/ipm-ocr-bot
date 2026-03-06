@@ -113,6 +113,11 @@ def _resolve_bbox(bbox):
     return None, "invalid_bbox"
 
 
+def resolve_bbox(bbox):
+    resolved, _reason = _resolve_bbox(bbox)
+    return resolved
+
+
 def capture_bbox(bbox) -> tuple[Optional[Image.Image], dict]:
     resolved, reason = _resolve_bbox(bbox)
     if not resolved:
@@ -335,3 +340,35 @@ def preprocess_for_mode(img, mode: str) -> Optional[np.ndarray]:
     if mode == "hud_cash":
         return _prep_hud_cash(img)
     return _prep_generic(img)
+
+
+def ocr_read_debug(bbox, *, mode: str) -> dict:
+    """Single-pass OCR with raw text + parsed value for UI preview."""
+    if bbox is None:
+        return {"ok": False, "reason": "bbox_none", "text": "", "value": None}
+    img, _meta = capture_bbox(bbox)
+    ok, reason = validate_crop(img, bbox, mode)
+    if not ok:
+        return {"ok": False, "reason": reason, "text": "", "value": None}
+
+    if mode == "hud_cash":
+        bw = _prep_hud_cash(img)
+        whitelist = "0123456789.,$KMBTqQsSO"
+        psm = 7
+    elif mode == "ore_qty":
+        bw = _prep_ore_qty(img)
+        whitelist = "0123456789.,KMBTqQsSO"
+        psm = 7
+    else:
+        bw = _prep_generic(img)
+        whitelist = "0123456789.,$KMBTqQsSO"
+        psm = 6
+
+    if bw is None or (isinstance(bw, np.ndarray) and bw.size == 0):
+        return {"ok": False, "reason": "prep_empty", "text": "", "value": None}
+
+    text = _ocr_text(bw, psm=psm, whitelist=whitelist)
+    value = parse_compact_number(text)
+    if value is None:
+        return {"ok": False, "reason": "parse_fail", "text": text, "value": None}
+    return {"ok": True, "reason": "ok", "text": text, "value": value}

@@ -122,11 +122,19 @@ ENABLE_ORE_OCR = True
 TESSERACT_CMD = r"C:\Program Files\Tesseract-OCR\tesseract.exe"  # leave empty to use PATH; optional override if needed
 OCR_SNAP_DEBUG = True  # set True to save OCR debug crops
 # Cyan border sampling debug logs
-CYAN_DEBUG = False
+CYAN_DEBUG = True
+# Rects storage + BlueStacks anchor
+RECTS_JSON_PATH = "rects.json"
+RECTS_USE_CLIENT = False  # use rects.json keys for client-relative rects
+BLUESTACKS_TITLE_HINT = "BlueStacks App Player"
+# Rect editor settings
+RECT_EDITOR_GRID_SIZE = 5
+RECT_EDITOR_OCR_FPS = 4
+RECT_EDITOR_DEFAULT_MODE = "generic"
 # HUD cash bbox: (x, y, w, h) - TODO calibrate for your screen
-RECT_HUD_CASH = (0, 0, 0, 0)
+RECT_HUD_CASH = "HUD_CASH"
 # Planet stats panel bbox: (x, y, w, h)
-PLANET_STATS_PANEL = (1443, 697, 149, 263)
+PLANET_STATS_PANEL = "PLANET_STATS_PANEL"
 PLANET_SWITCH_DELAY = 0.20
 PLANET_OCR_RETRY_DELAY = 0.20
 

@@ -7,10 +7,10 @@ This repo automates Idle Planet Miner running in BlueStacks 5 on Windows.
    - All actions must be executed via key presses that trigger BlueStacks key-mapped taps/gestures.
    - Do not add mouse movement, mouse clicks, drag logic, or scroll wheel logic.
 
-2) No OCR / no heavy vision.
-   - Do not add OCR, OpenCV pipelines, template matching, or rectangle-driven UI parsing.
-   - Any visual logic must be optional, minimal, and strictly limited to tiny “button enabled” signal sampling (small patches) and/or simple lap detection hashes.
-   - If a feature can be done with deterministic key sequences, do that instead.
+2) Perception-first reads are allowed by explicit user override.
+   - OCR, template matching, and vision backends are allowed when they improve reliability.
+   - The perception stack must still fail closed and prefer high-confidence reads over guesses.
+   - Keep deterministic key-sequence control for actions; use perception to understand the UI.
 
 3) Keep it simple and modular.
    - Prefer small modules: one task per file.
@@ -56,7 +56,7 @@ This repo automates Idle Planet Miner running in BlueStacks 5 on Windows.
 - Main loop runs small deterministic modules (planets, ores, etc.) with conservative delays.
 
 ## What the agent must NOT do
-- Do not redesign the project around OCR/vision.
+- Do not add perception complexity without routing it through a small reusable backend layer.
 - Do not introduce complex UI detection or window capture frameworks.
 - Do not refactor into a big architecture “because it’s cleaner.”
 - Do not remove the manual override pattern (F9).
@@ -87,7 +87,7 @@ This repo automates Idle Planet Miner running in BlueStacks 5 on Windows.
 - [ ] Delays are conservative enough to avoid missed inputs.
 
 ### Dependencies
-- [ ] No new heavy deps added (no OpenCV, no OCR libs).
+- [ ] New perception deps are optional at runtime and documented.
 - [ ] If any new dependency is added, it is justified and documented in the commit message.
 
 ### Smoke Test (manual)

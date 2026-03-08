@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from typing import Optional
 
 import win32gui
 import win32con
+
+import config
 
 
 @dataclass(frozen=True)
@@ -13,6 +16,9 @@ class ClientRect:
     top: int
     width: int
     height: int
+
+
+_RECT_CACHE: dict[str, tuple[float, ClientRect]] = {}
 
 
 def _enum_windows():
@@ -39,6 +45,35 @@ def find_window_by_title_substring(sub: str) -> Optional[int]:
     return None
 
 
+def activate_window(hwnd: int) -> bool:
+    if not hwnd:
+        return False
+    try:
+        if win32gui.IsIconic(hwnd):
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        else:
+            win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+        win32gui.SetForegroundWindow(hwnd)
+        return True
+    except Exception:
+        return False
+
+
+def activate_window_by_title_substring(sub: str) -> bool:
+    hwnd = find_window_by_title_substring(sub)
+    if not hwnd:
+        return False
+    return activate_window(hwnd)
+
+
+def _title_matches(hwnd: int, sub: str) -> bool:
+    try:
+        title = win32gui.GetWindowText(hwnd) or ""
+    except Exception:
+        return False
+    return sub.lower() in title.lower()
+
+
 def get_client_rect_screen(hwnd: int) -> Optional[ClientRect]:
     if not hwnd:
         return None
@@ -59,7 +94,25 @@ def get_client_rect_screen(hwnd: int) -> Optional[ClientRect]:
 
 
 def get_bluestacks_client_rect(title_hint: str = "BlueStacks App Player") -> Optional[ClientRect]:
-    hwnd = find_window_by_title_substring(title_hint)
+    now = time.monotonic()
+    ttl = float(getattr(config, "WINDOW_RECT_CACHE_TTL", 0.5) or 0.0)
+    cached = _RECT_CACHE.get(title_hint)
+    if cached and cached[0] > now:
+        return cached[1]
+
+    hwnd = None
+    try:
+        fg = win32gui.GetForegroundWindow()
+        if fg and _title_matches(fg, title_hint):
+            hwnd = fg
+    except Exception:
+        hwnd = None
+
+    if not hwnd:
+        hwnd = find_window_by_title_substring(title_hint)
     if not hwnd:
         return None
-    return get_client_rect_screen(hwnd)
+    rect = get_client_rect_screen(hwnd)
+    if rect and ttl > 0:
+        _RECT_CACHE[title_hint] = (now + ttl, rect)
+    return rect

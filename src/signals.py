@@ -1,15 +1,60 @@
 from PIL import ImageGrab
 import numpy as np
+from pathlib import Path
 import config
+from rect_store import RectStore
+from window_win32 import get_bluestacks_client_rect
 
-RECT_MINING = (1796, 730, 8, 8)
-RECT_SPEED = (1793, 819, 8, 8)
-RECT_CARGO = (1794, 914, 8, 8)
+RECT_MINING = "UPGRADE_MINING"
+RECT_SPEED = "UPGRADE_SPEED"
+RECT_CARGO = "UPGRADE_CARGO"
 RECT_ORES_SCROLLBAR_TOP = (0, 0, 10, 10)
+
+_RECT_STORE: RectStore | None = None
+
+
+def _load_rects() -> RectStore | None:
+    global _RECT_STORE
+    if _RECT_STORE is not None:
+        return _RECT_STORE
+    path = Path(getattr(config, "RECTS_JSON_PATH", "rects.json"))
+    if not path.exists():
+        return None
+    _RECT_STORE = RectStore.load(path)
+    return _RECT_STORE
+
+
+def _resolve_rect(rect):
+    title_hint = getattr(config, "BLUESTACKS_TITLE_HINT", "BlueStacks App Player")
+    if isinstance(rect, str):
+        store = _load_rects()
+        if store is None:
+            return None
+        rel = store.rects.get(rect)
+        if rel is None:
+            return None
+        c = get_bluestacks_client_rect(title_hint)
+        if not c:
+            return None
+        x, y, w, h = rel
+        return (c.left + x, c.top + y, w, h)
+
+    if isinstance(rect, (tuple, list)) and len(rect) == 4:
+        if getattr(config, "RECTS_USE_CLIENT", False):
+            c = get_bluestacks_client_rect(title_hint)
+            if not c:
+                return None
+            x, y, w, h = rect
+            return (c.left + x, c.top + y, w, h)
+        return rect
+    return None
 
 def sample_rect(rect) -> np.ndarray:
     try:
-        x, y, w, h = rect
+        resolved = _resolve_rect(rect)
+        if not resolved:
+            return np.array([])
+        x, y, w, h = resolved
         img = ImageGrab.grab(bbox=(x, y, x + w, y + h))
         return np.array(img)
     except Exception:
@@ -28,21 +73,37 @@ def is_cyan_present(rect) -> bool:
     height, width = pixels.shape[0], pixels.shape[1]
     if height <= 0 or width <= 0:
         return False
-    sx = 1 if width > 2 else 0
+    band = max(1, min(int(getattr(config, "CYAN_BORDER_WIDTH", 4)), width // 3, height // 3))
+    border_parts = [
+        pixels[:, :band, :],
+        pixels[:, width - band :, :],
+        pixels[:band, :, :],
+        pixels[height - band :, :, :],
+    ]
+    border = np.concatenate([part.reshape(-1, 3) for part in border_parts], axis=0)
+    red = border[:, 0].astype(np.int16)
+    green = border[:, 1].astype(np.int16)
+    blue = border[:, 2].astype(np.int16)
 
-    samples = []
-    votes = 0
-    n = 5
-    for i in range(n):
-        sy = int(round((i + 1) * (height - 1) / (n + 1)))
-        r, g, b = pixels[sy, sx, 0], pixels[sy, sx, 1], pixels[sy, sx, 2]
-        samples.append((int(r), int(g), int(b)))
-        if r < 80 and g > 170 and b > 190:
-            votes += 1
-
-    affordable = votes >= 3
+    cyan_mask = (
+        (blue > 145)
+        & (green > 115)
+        & ((blue - red) > 55)
+        & ((green - red) > 25)
+        & ((blue - green) > -35)
+    )
+    cyan_ratio = float(cyan_mask.mean()) if cyan_mask.size else 0.0
+    affordable = cyan_ratio >= float(getattr(config, "CYAN_MIN_PIXEL_RATIO", 0.06))
     if getattr(config, "CYAN_DEBUG", False):
-        print(f"[CYAN] rect={rect} samples={samples} votes={votes} -> affordable={affordable}")
+        sample_points = []
+        for sy in (height // 4, height // 2, (3 * height) // 4):
+            sx = min(width - 1, max(0, band // 2))
+            r, g, b = pixels[sy, sx, 0], pixels[sy, sx, 1], pixels[sy, sx, 2]
+            sample_points.append((int(r), int(g), int(b)))
+        print(
+            f"[CYAN] rect={rect} samples={sample_points} "
+            f"ratio={cyan_ratio:.3f} band={band} -> affordable={affordable}"
+        )
     return affordable
 
 def mining_available() -> bool:

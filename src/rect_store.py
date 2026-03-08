@@ -33,4 +33,15 @@ class RectStore:
         payload = {k: list(self.rects[k]) for k in sorted(self.rects.keys())}
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
         tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        tmp.replace(self.path)
+        try:
+            tmp.replace(self.path)
+        except PermissionError:
+            # Fallback: try direct write if atomic replace is blocked (e.g., file locked)
+            try:
+                self.path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+                try:
+                    tmp.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            except Exception as exc:
+                print(f"[SAVE] failed to write {self.path}: {exc.__class__.__name__}")

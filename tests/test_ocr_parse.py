@@ -22,3 +22,8 @@ def test_parse_compact_number(text, expected):
 
 def test_parse_compact_number_invalid():
     assert ocr.parse_compact_number("O0DEFF") is None
+
+
+def test_parse_compact_number_normalizes_safe_ocr_noise():
+    assert ocr.parse_compact_number("214.39K.") == 214_390
+    assert ocr.parse_compact_number("2OK") == 20_000

@@ -25,12 +25,24 @@ def _cfg_value(cfg, name, fallback=None):
     return fallback
 
 
+def _active_ore_row_map(cfg):
+    helper = getattr(cfg, "unlocked_ore_row_map", None)
+    if callable(helper):
+        try:
+            row_map = helper()
+        except Exception:
+            row_map = None
+        if isinstance(row_map, dict) and row_map:
+            return row_map
+    return _cfg_value(cfg, "ORE_ROW_MAP", {})
+
+
 def compute_reservations(state: Optional[StateSnapshot], cfg=config) -> dict:
     reservations: dict[str, int] = {}
 
     ore_floor = int(_cfg_value(cfg, "ORE_KEEP_FLOOR_DEFAULT", 0) or 0)
     ore_overrides = _cfg_value(cfg, "ORE_KEEP_OVERRIDES", {})
-    ore_map = _cfg_value(cfg, "ORE_ROW_MAP", {})
+    ore_map = _active_ore_row_map(cfg)
     ore_reserve_by_row = _cfg_value(cfg, "ORE_RESERVE_BY_ROW", {})
 
     for row_index, ore_name in ore_map.items():
@@ -93,7 +105,7 @@ def decide_ore_sales(ore_qty_by_name_or_row: dict, reservations: dict, cfg=confi
     if not isinstance(ore_qty_by_name_or_row, dict):
         return actions
 
-    ore_map = _cfg_value(cfg, "ORE_ROW_MAP", {})
+    ore_map = _active_ore_row_map(cfg)
 
     for key, qty in ore_qty_by_name_or_row.items():
         if isinstance(key, int):

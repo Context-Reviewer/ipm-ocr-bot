@@ -2,6 +2,8 @@ import time
 import ctypes
 import keyboard
 from config import KEY_DELAY, MENU_DELAY
+from window_win32 import get_bluestacks_client_rect
+from window_win32 import activate_window_by_title_substring
 
 INPUT_KEYBOARD = 1
 KEYEVENTF_KEYUP = 0x0002
@@ -13,8 +15,14 @@ VK_OEM_MINUS = 0xBD
 VK_OEM_PLUS = 0xBB
 
 user32 = ctypes.windll.user32
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP = 0x0004
 
 DEBUG = False
+
+
+def ensure_bluestacks_foreground(title_hint: str = "BlueStacks App Player") -> bool:
+    return activate_window_by_title_substring(title_hint)
 
 class KEYBDINPUT(ctypes.Structure):
     _fields_ = [
@@ -72,6 +80,8 @@ def tap(key: str, delay: float = KEY_DELAY, debug: bool = False):
     if debug or DEBUG:
         print(f"TAP {key}")
 
+    ensure_bluestacks_foreground()
+
     normalized = normalize_key(key)
     vk = _vk_for_numpad(normalized)
     if vk is not None:
@@ -81,6 +91,33 @@ def tap(key: str, delay: float = KEY_DELAY, debug: bool = False):
 
     keyboard.send(key)
     time.sleep(delay)
+
+def click_screen_point(point: tuple[int, int], delay: float = KEY_DELAY, title_hint: str = "BlueStacks App Player") -> bool:
+    try:
+        abs_x, abs_y = point
+    except Exception:
+        return False
+    ensure_bluestacks_foreground(title_hint)
+    user32.SetCursorPos(int(abs_x), int(abs_y))
+    time.sleep(0.03)
+    user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    time.sleep(0.03)
+    user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    time.sleep(delay)
+    return True
+
+def click_client_point(point: tuple[int, int], delay: float = KEY_DELAY, title_hint: str = "BlueStacks App Player") -> bool:
+    try:
+        rel_x, rel_y = point
+    except Exception:
+        return False
+    ensure_bluestacks_foreground(title_hint)
+    client = get_bluestacks_client_rect(title_hint)
+    if not client:
+        return False
+    abs_x = int(client.left + rel_x)
+    abs_y = int(client.top + rel_y)
+    return click_screen_point((abs_x, abs_y), delay=delay, title_hint=title_hint)
 
 def tap_key(key: str) -> None:
     tap(key)

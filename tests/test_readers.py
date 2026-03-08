@@ -292,6 +292,42 @@ def test_planet_panel_reader_uses_openai_json_without_plain_text_panel_parse():
     assert state.title_backend == "openai"
 
 
+def test_planet_panel_reader_accepts_early_planet_costs_from_openai_json():
+    cfg = RuntimeConfig()
+    rects = RectStore(
+        path=None,
+        rects={
+            "PLANET_PANEL_TEXT": (0, 0, 1, 1),
+        },
+    )
+    perception = HybridPerceptionBackend(
+        primary=FakeBackend(name="windows", mapping={(cfg.perception.prompt_planet_panel, "planet_panel"): ""}),
+        fallback=_openai_fallback(
+            FakeBackend(
+                name="openai",
+                planet_json=PlanetPanelJSON(
+                    panel_type="planet_panel",
+                    planet_name="DRAŠTA",
+                    level="2",
+                    upgrades=PlanetPanelUpgradesJSON(
+                        mining_cost="233",
+                        speed_cost="106",
+                        cargo_cost="29",
+                    ),
+                    cash="$147",
+                ),
+                fail_panel_text=True,
+            )
+        ),
+    )
+    state = PlanetPanelReader(cfg, rects, FakeCapture(), perception).read()
+    assert state.title == "DRAŠTA"
+    assert state.mining_cost == 233
+    assert state.speed_cost == 106
+    assert state.cargo_cost == 29
+    assert state.title_backend == "openai"
+
+
 def test_ore_panel_reader_falls_through_to_legacy_after_openai_semantic_failure():
     cfg = RuntimeConfig(visible_ore_rows=1)
     rects = RectStore(
@@ -344,7 +380,7 @@ def test_planet_panel_reader_rejects_implausible_field_numbers():
     perception = SequentialNumericBackend(
         name="windows",
         title_value="8. ACHEAON",
-        numeric_values=["7470", "14", "0", "47", "32.11K", "31.62K"],
+        numeric_values=["7470", "14", "0", "0", "32.11K", "31.62K"],
     )
     state = PlanetPanelReader(cfg, rects, FakeCapture(), perception).read()
     assert state.planet_id == 8

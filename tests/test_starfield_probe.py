@@ -210,3 +210,18 @@ def test_planets_task_probe_confirmation_requires_plausible_title_and_costs():
     assert PlanetsTask._probe_panel_confirmed(PlanetPanelState(title="1. BALOR", mining_cost=100, speed_cost=200)) is True
     assert PlanetsTask._probe_panel_confirmed(PlanetPanelState(title="", mining_cost=100, speed_cost=200)) is False
     assert PlanetsTask._probe_panel_confirmed(PlanetPanelState(title="Ship Speed", mining_cost=100, speed_cost=200)) is False
+
+
+def test_planets_task_probe_confirmation_accepts_partial_upgrade_data_with_plausible_level():
+    assert (
+        PlanetsTask._probe_panel_confirmed(
+            PlanetPanelState(
+                title="DRAŠTA",
+                mining_level=2,
+                mining_cost=233,
+                speed_cost=106,
+                cargo_cost=None,
+            )
+        )
+        is True
+    )

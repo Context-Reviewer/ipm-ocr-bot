@@ -4,21 +4,12 @@ from dataclasses import dataclass
 import re
 import unicodedata
 
+from ..domain_data import normalize_ore_name
 from .common import parse_compact_number, parse_int
 
 
 _TITLE_RE = re.compile(r"^\s*(\d{1,2})\s*[\.:]\s+([A-Z][A-Z0-9 .'-]*)")
 _ALPHA_RE = re.compile(r"[^A-Z]+")
-_ORE_ALIASES = {
-    "COPPER": "Copper",
-    "IRON": "Iron",
-    "LEAD": "Lead",
-    "SILICA": "Silica",
-    "ALUMINUM": "Aluminum",
-    "ALUMINIUM": "Aluminum",
-    "TITANIUM": "Titanium",
-    "SILVER": "Silver",
-}
 _LEVEL_SKIP_TOKENS = ("SEC", "KPH", "MPH", "MKPH", "/", "RATE", "YIELD", "COST", "$")
 
 
@@ -47,13 +38,6 @@ def _ascii_upper(text: str | None) -> str:
 
 def _clean_lines(text: str | None) -> list[str]:
     return [line.strip() for line in str(text or "").splitlines() if line.strip()]
-
-
-def normalize_ore_name(text: str | None) -> str:
-    token = _ALPHA_RE.sub("", _ascii_upper(text))
-    return _ORE_ALIASES.get(token, "")
-
-
 def _extract_level(lines: list[str], keyword: str) -> int | None:
     ascii_lines = [_ascii_upper(line) for line in lines]
     for index, ascii_line in enumerate(ascii_lines):

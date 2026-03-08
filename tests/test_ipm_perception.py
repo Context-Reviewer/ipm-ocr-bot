@@ -23,32 +23,112 @@ def _image():
     return Image.new("RGB", (50, 20), "white")
 
 
-def test_read_ore_panel_json_parses_valid_openai_payload():
+def test_read_ore_panel_json_preserves_valid_structured_read():
     backend = OpenAIPerceptionBackend(enabled=True)
     backend._client = FakeClient(
-        '{"panel_type":"ore_panel","planet_name":"8. ACHEAON","ores":[{"name":"Copper","quantity":"2.26K","price":"$1"}]}'
+        '{"panel_type":"ore_panel","planet_name":"8. ACHEAON","ores":[{"name":"Silica","quantity":"2.26K","price":"$1"}]}'
     )
     result = backend.read_ore_panel_json(_image())
     assert result.panel_type == "ore_panel"
     assert result.planet_name == "8. ACHEAON"
-    assert result.ores[0].name == "Copper"
+    assert result.ores[0].name == "Silica"
     assert result.ores[0].quantity == "2.26K"
 
 
-def test_read_planet_panel_json_parses_valid_openai_payload():
+def test_read_ore_panel_json_normalizes_alias_to_canonical_ore_name():
+    backend = OpenAIPerceptionBackend(enabled=True)
+    backend._client = FakeClient(
+        '{"panel_type":"ore_panel","planet_name":"8. ACHEAON","ores":[{"name":"Silicon","quantity":"2.26K","price":"$1"}]}'
+    )
+    result = backend.read_ore_panel_json(_image())
+    assert result.ores[0].name == "Silica"
+
+
+def test_read_planet_panel_json_preserves_valid_structured_read():
     backend = OpenAIPerceptionBackend(enabled=True)
     backend._client = FakeClient(
         (
             '{"panel_type":"planet_panel","planet_name":"8. ACHEAON","level":"7",'
             '"upgrades":{"mining_cost":"$7.84K","speed_cost":"32.11K","cargo_cost":"31.62K"},'
-            '"cash":"$ 235"}'
+            '"cash":"$235"}'
         )
     )
     result = backend.read_planet_panel_json(_image())
     assert result.panel_type == "planet_panel"
     assert result.planet_name == "8. ACHEAON"
     assert result.upgrades.mining_cost == "$7.84K"
-    assert result.cash == "$ 235"
+    assert result.cash == "$235"
+
+
+def test_read_planet_panel_json_rejects_prose_wrapped_title():
+    backend = OpenAIPerceptionBackend(enabled=True)
+    backend._client = FakeClient(
+        (
+            '{"panel_type":"planet_panel","planet_name":"The visible planet title is Water Planet.",'
+            '"level":"7","upgrades":{"mining_cost":"$7.84K","speed_cost":"32.11K","cargo_cost":"31.62K"},'
+            '"cash":"$235"}'
+        )
+    )
+    with pytest.raises(StructuredPerceptionError) as exc:
+        backend.read_planet_panel_json(_image())
+    assert "invalid_title_prose" in str(exc.value)
+
+
+def test_read_planet_panel_json_preserves_usable_numbered_title_format():
+    backend = OpenAIPerceptionBackend(enabled=True)
+    backend._client = FakeClient(
+        (
+            '{"panel_type":"planet_panel","planet_name":"8. ACHEAON","level":"7",'
+            '"upgrades":{"mining_cost":"$7.84K","speed_cost":"32.11K","cargo_cost":"31.62K"},'
+            '"cash":"$235"}'
+        )
+    )
+    result = backend.read_planet_panel_json(_image())
+    assert result.planet_name == "8. ACHEAON"
+
+
+def test_read_ore_panel_json_rejects_junk_ore_name():
+    backend = OpenAIPerceptionBackend(enabled=True)
+    backend._client = FakeClient(
+        '{"panel_type":"ore_panel","planet_name":"8. ACHEAON","ores":[{"name":"The","quantity":"2.26K","price":"$1"}]}'
+    )
+    with pytest.raises(StructuredPerceptionError) as exc:
+        backend.read_ore_panel_json(_image())
+    assert "invalid_ore_name" in str(exc.value)
+
+
+def test_read_ore_panel_json_rejects_empty_ore_name():
+    backend = OpenAIPerceptionBackend(enabled=True)
+    backend._client = FakeClient(
+        '{"panel_type":"ore_panel","planet_name":"8. ACHEAON","ores":[{"name":"","quantity":"2.26K","price":"$1"}]}'
+    )
+    with pytest.raises(StructuredPerceptionError) as exc:
+        backend.read_ore_panel_json(_image())
+    assert "invalid_ore_name" in str(exc.value) or "invalid_schema" in str(exc.value)
+
+
+def test_read_ore_panel_json_rejects_invalid_quantity():
+    backend = OpenAIPerceptionBackend(enabled=True)
+    backend._client = FakeClient(
+        '{"panel_type":"ore_panel","planet_name":"8. ACHEAON","ores":[{"name":"Copper","quantity":"about 2K","price":"$1"}]}'
+    )
+    with pytest.raises(StructuredPerceptionError) as exc:
+        backend.read_ore_panel_json(_image())
+    assert "invalid_quantity" in str(exc.value)
+
+
+def test_read_planet_panel_json_rejects_implausible_panel_numbers():
+    backend = OpenAIPerceptionBackend(enabled=True)
+    backend._client = FakeClient(
+        (
+            '{"panel_type":"planet_panel","planet_name":"8. ACHEAON","level":"7470",'
+            '"upgrades":{"mining_cost":"47","speed_cost":"32.11K","cargo_cost":"31.62K"},'
+            '"cash":"$235"}'
+        )
+    )
+    with pytest.raises(StructuredPerceptionError) as exc:
+        backend.read_planet_panel_json(_image())
+    assert "implausible_level" in str(exc.value) or "implausible_cost" in str(exc.value)
 
 
 def test_read_ore_panel_json_raises_on_malformed_json():
@@ -57,11 +137,3 @@ def test_read_ore_panel_json_raises_on_malformed_json():
     with pytest.raises(StructuredPerceptionError) as exc:
         backend.read_ore_panel_json(_image())
     assert "invalid_json" in str(exc.value)
-
-
-def test_read_planet_panel_json_raises_on_schema_failure():
-    backend = OpenAIPerceptionBackend(enabled=True)
-    backend._client = FakeClient('{"panel_type":"planet_panel","planet_name":"8. ACHEAON"}')
-    with pytest.raises(StructuredPerceptionError) as exc:
-        backend.read_planet_panel_json(_image())
-    assert "schema_validation_failed" in str(exc.value)

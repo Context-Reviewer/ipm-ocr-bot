@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict
 
+from .domain_data import ORE_NAMES
+
 
 @dataclass(slots=True)
 class FocusConfig:
@@ -31,6 +33,10 @@ class PerceptionConfig:
     openai_enabled: bool = True
     openai_model: str = "gpt-4.1-mini"
     openai_max_output_tokens: int = 96
+    semantic_level_min: int = 1
+    semantic_level_max: int = 999
+    semantic_upgrade_cost_min: int = 50
+    semantic_upgrade_cost_max: int = 1_000_000_000_000
     prompt_planet_title: str = "Read the planet title exactly as shown. Return only the visible title."
     prompt_planet_panel: str = (
         "Read all visible text from this planet menu crop in top-to-bottom order. "
@@ -99,16 +105,7 @@ class PolicyConfig:
     planet_panel_open_attempts: int = 3
     ore_sell_confirm_reads: int = 3
     ore_sell_max_relative_spread: float = 0.35
-    known_ore_names: tuple[str, ...] = (
-        "Copper",
-        "Iron",
-        "Lead",
-        "Silica",
-        "Aluminum",
-        "Aluminium",
-        "Titanium",
-        "Silver",
-    )
+    known_ore_names: tuple[str, ...] = ORE_NAMES
 
 
 @dataclass(slots=True)

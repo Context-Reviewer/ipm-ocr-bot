@@ -14,6 +14,8 @@ import numpy as np
 import pytesseract
 from PIL import Image
 
+from .domain_data import ORE_NAMES, is_plausible_planet_title, normalize_ore_name
+
 try:
     from openai import OpenAI
 except Exception:
@@ -33,6 +35,23 @@ except Exception:
     OcrEngine = None
     FileAccessMode = None
     StorageFile = None
+
+_NULLABLE_COMPACT_RE = re.compile(r"^\s*\$?\s*[0-9]+(?:[.,][0-9]+)?\s*[KMBT]?\s*$", re.IGNORECASE)
+_STRICT_INT_RE = re.compile(r"^\s*\d+\s*$")
+_TITLE_PROSE_PATTERNS = (
+    "the visible planet title is",
+    "visible planet title is",
+    "planet title is",
+    "the title is",
+    "title is",
+)
+_COMPACT_SUFFIX = {
+    "": 1,
+    "K": 1_000,
+    "M": 1_000_000,
+    "B": 1_000_000_000,
+    "T": 1_000_000_000_000,
+}
 
 
 @dataclass(slots=True, frozen=True)
@@ -119,6 +138,41 @@ def _validated_nullable_string(value: object, *, field: str) -> str | None:
     return value.strip() or None
 
 
+def _parse_compact_number_text(text: str | None) -> int | None:
+    if not text:
+        return None
+    cleaned = str(text).upper().replace("$", "").strip()
+    match = re.fullmatch(r"([0-9]+(?:[.,][0-9]+)?)([KMBT]?)", cleaned)
+    if not match:
+        return None
+    try:
+        value = float(match.group(1).replace(",", ""))
+    except Exception:
+        return None
+    return int(round(value * _COMPACT_SUFFIX.get(match.group(2).upper(), 1)))
+
+
+def _parse_strict_int(text: str | None) -> int | None:
+    if not text or not _STRICT_INT_RE.fullmatch(str(text)):
+        return None
+    try:
+        return int(str(text).strip())
+    except Exception:
+        return None
+
+def _has_title_prose(text: str | None) -> bool:
+    normalized = " ".join(str(text or "").lower().split())
+    if not normalized:
+        return False
+    if any(pattern in normalized for pattern in _TITLE_PROSE_PATTERNS):
+        return True
+    if '"' in normalized:
+        return True
+    if normalized.startswith(("the ", "this ")) and "title" in normalized:
+        return True
+    return False
+
+
 def _validate_ore_panel_payload(payload: object) -> OrePanelJSON:
     if not isinstance(payload, dict):
         raise ValueError("ore_panel payload must be an object")
@@ -140,8 +194,8 @@ def _validate_ore_panel_payload(payload: object) -> OrePanelJSON:
         if row_extra:
             raise ValueError(f"ore_panel ores[{index}] has extra keys: {sorted(row_extra)}")
         name = entry.get("name")
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError(f"ore_panel ores[{index}].name must be a non-empty string")
+        if not isinstance(name, str):
+            raise ValueError(f"ore_panel ores[{index}].name must be a string")
         rows.append(
             OrePanelRowJSON(
                 name=name.strip(),
@@ -183,6 +237,80 @@ def _validate_planet_panel_payload(payload: object) -> PlanetPanelJSON:
         ),
         cash=_validated_nullable_string(payload.get("cash"), field="cash"),
     )
+
+
+def _semantic_validate_ore_panel_payload(
+    payload: OrePanelJSON,
+    *,
+    known_ore_names: tuple[str, ...],
+) -> OrePanelJSON:
+    known_lookup = {normalize_ore_name(name) for name in known_ore_names if normalize_ore_name(name)}
+    if not payload.ores:
+        raise ValueError("invalid_ore_name:no_rows")
+    normalized_rows: list[OrePanelRowJSON] = []
+    for row in payload.ores:
+        normalized_name = normalize_ore_name(row.name)
+        if not normalized_name or normalized_name not in known_lookup:
+            raise ValueError(f"invalid_ore_name:{row.name!r}")
+        if row.name.strip().lower() in {"the", "a", "an"}:
+            raise ValueError(f"invalid_ore_name:{row.name!r}")
+        if row.quantity is None or not _NULLABLE_COMPACT_RE.fullmatch(row.quantity):
+            raise ValueError(f"invalid_quantity:{row.quantity!r}")
+        if _parse_compact_number_text(row.quantity) is None:
+            raise ValueError(f"invalid_quantity:{row.quantity!r}")
+        if row.price is not None:
+            if not _NULLABLE_COMPACT_RE.fullmatch(row.price):
+                raise ValueError(f"implausible_cost:{row.price!r}")
+            if _parse_compact_number_text(row.price) is None:
+                raise ValueError(f"implausible_cost:{row.price!r}")
+        normalized_rows.append(
+            OrePanelRowJSON(
+                name=normalized_name,
+                quantity=row.quantity,
+                price=row.price,
+            )
+        )
+    return OrePanelJSON(
+        panel_type=payload.panel_type,
+        planet_name=payload.planet_name,
+        ores=tuple(normalized_rows),
+        backend=payload.backend,
+    )
+
+
+def _semantic_validate_planet_panel_payload(
+    payload: PlanetPanelJSON,
+    *,
+    planet_level_min: int,
+    planet_level_max: int,
+    upgrade_cost_min: int,
+    upgrade_cost_max: int,
+) -> PlanetPanelJSON:
+    if payload.planet_name is not None and _has_title_prose(payload.planet_name):
+        raise ValueError(f"invalid_title_prose:{payload.planet_name!r}")
+    if payload.planet_name is not None and not is_plausible_planet_title(payload.planet_name):
+        raise ValueError(f"invalid_title_prose:{payload.planet_name!r}")
+    if payload.level is not None:
+        level_value = _parse_strict_int(payload.level)
+        if level_value is None or level_value < planet_level_min or level_value > planet_level_max:
+            raise ValueError(f"implausible_level:{payload.level!r}")
+    parsed_costs: list[int] = []
+    for label, raw_value in (
+        ("mining_cost", payload.upgrades.mining_cost),
+        ("speed_cost", payload.upgrades.speed_cost),
+        ("cargo_cost", payload.upgrades.cargo_cost),
+    ):
+        if raw_value is None:
+            continue
+        if not _NULLABLE_COMPACT_RE.fullmatch(raw_value):
+            raise ValueError(f"implausible_cost:{label}={raw_value!r}")
+        value = _parse_compact_number_text(raw_value)
+        if value is None or value < upgrade_cost_min or value > upgrade_cost_max:
+            raise ValueError(f"implausible_cost:{label}={raw_value!r}")
+        parsed_costs.append(value)
+    if payload.planet_name is None and payload.level is None and not parsed_costs and payload.cash is None:
+        raise ValueError("invalid_title_prose:empty_panel")
+    return payload
 
 
 def _iter_backends(backend: object):
@@ -335,6 +463,11 @@ class OpenAIPerceptionBackend:
     model: str = "gpt-4.1-mini"
     max_output_tokens: int = 96
     enabled: bool = True
+    known_ore_names: tuple[str, ...] = ORE_NAMES
+    planet_level_min: int = 1
+    planet_level_max: int = 999
+    upgrade_cost_min: int = 50
+    upgrade_cost_max: int = 1_000_000_000_000
     _client: object | None = None
 
     def available(self) -> bool:
@@ -401,7 +534,8 @@ class OpenAIPerceptionBackend:
         response: object,
         *,
         panel_type: str,
-        validator,
+        shape_validator,
+        semantic_validator,
     ):
         raw_output = _extract_response_text(response)
         if not raw_output:
@@ -414,21 +548,32 @@ class OpenAIPerceptionBackend:
         try:
             payload = json.loads(raw_output)
         except Exception as exc:
-            print(f"[PERCEPTION] {panel_type} openai raw_output={raw_output!r}")
+            print(f"[PERCEPTION] {panel_type} semantic_reject reason=invalid_json raw_output={raw_output!r}")
             raise StructuredPerceptionError(
                 backend=self.name,
                 panel_type=panel_type,
-                reason=f"invalid_json: {exc}",
+                reason=f"invalid_json:{exc}",
                 raw_output=raw_output,
             ) from exc
         try:
-            return validator(payload)
+            shaped = shape_validator(payload)
         except Exception as exc:
-            print(f"[PERCEPTION] {panel_type} openai raw_output={raw_output!r}")
+            print(f"[PERCEPTION] {panel_type} semantic_reject reason=invalid_schema raw_output={raw_output!r}")
             raise StructuredPerceptionError(
                 backend=self.name,
                 panel_type=panel_type,
-                reason=f"schema_validation_failed: {exc}",
+                reason=f"invalid_schema:{exc}",
+                raw_output=raw_output,
+            ) from exc
+        try:
+            return semantic_validator(shaped)
+        except Exception as exc:
+            reason = str(exc) or "semantic_reject"
+            print(f"[PERCEPTION] {panel_type} semantic_reject reason={reason} raw_output={raw_output!r}")
+            raise StructuredPerceptionError(
+                backend=self.name,
+                panel_type=panel_type,
+                reason=reason,
                 raw_output=raw_output,
             ) from exc
 
@@ -486,11 +631,14 @@ class OpenAIPerceptionBackend:
         prompt = (
             "You are parsing a cropped Idle Planet Miner ore panel.\n"
             "Return JSON only.\n"
-            "Do not use markdown fences.\n"
-            "Do not explain anything.\n"
-            "Do not add extra keys.\n"
-            "Use null for unreadable fields.\n"
-            "Preserve visible strings exactly where practical.\n"
+            "No markdown.\n"
+            "No explanations.\n"
+            "No sentence wrappers.\n"
+            "No extra keys.\n"
+            "Use null when unreadable.\n"
+            "Each ore name must be the ore name only.\n"
+            "Each quantity must be the raw visible numeric string only.\n"
+            "Each price must be the raw visible numeric string only or null.\n"
             "Schema:\n"
             '{"panel_type":"ore_panel","planet_name":"string or null","ores":[{"name":"string","quantity":"string or null","price":"string or null"}]}'
         )
@@ -501,7 +649,15 @@ class OpenAIPerceptionBackend:
             schema_name="ore_panel",
             schema=schema,
         )
-        return self._decode_json_payload(response, panel_type="ore_panel", validator=_validate_ore_panel_payload)
+        return self._decode_json_payload(
+            response,
+            panel_type="ore_panel",
+            shape_validator=_validate_ore_panel_payload,
+            semantic_validator=lambda payload: _semantic_validate_ore_panel_payload(
+                payload,
+                known_ore_names=self.known_ore_names,
+            ),
+        )
 
     def read_planet_panel_json(self, image: Image.Image) -> PlanetPanelJSON:
         schema = {
@@ -528,11 +684,15 @@ class OpenAIPerceptionBackend:
         prompt = (
             "You are parsing a cropped Idle Planet Miner planet panel.\n"
             "Return JSON only.\n"
-            "Do not use markdown fences.\n"
-            "Do not explain anything.\n"
-            "Do not add extra keys.\n"
-            "Use null for unreadable fields.\n"
-            "Preserve visible strings exactly where practical.\n"
+            "No markdown.\n"
+            "No explanations.\n"
+            "No sentence wrappers.\n"
+            "No extra keys.\n"
+            "Use null when unreadable.\n"
+            "Planet title must be the title text only.\n"
+            "Level must be the raw visible integer string only or null.\n"
+            "Upgrade costs must be the raw visible numeric strings only or null.\n"
+            "Cash must be the raw visible numeric string only or null.\n"
             "Schema:\n"
             '{"panel_type":"planet_panel","planet_name":"string or null","level":"string or null","upgrades":{"mining_cost":"string or null","speed_cost":"string or null","cargo_cost":"string or null"},"cash":"string or null"}'
         )
@@ -546,7 +706,14 @@ class OpenAIPerceptionBackend:
         return self._decode_json_payload(
             response,
             panel_type="planet_panel",
-            validator=_validate_planet_panel_payload,
+            shape_validator=_validate_planet_panel_payload,
+            semantic_validator=lambda payload: _semantic_validate_planet_panel_payload(
+                payload,
+                planet_level_min=self.planet_level_min,
+                planet_level_max=self.planet_level_max,
+                upgrade_cost_min=self.upgrade_cost_min,
+                upgrade_cost_max=self.upgrade_cost_max,
+            ),
         )
 
 
@@ -627,6 +794,11 @@ def create_perception_backend(
     hybrid_order: str = "windows_first",
     openai_enabled: bool = True,
     openai_max_output_tokens: int = 96,
+    known_ore_names: tuple[str, ...] = ORE_NAMES,
+    planet_level_min: int = 1,
+    planet_level_max: int = 999,
+    upgrade_cost_min: int = 50,
+    upgrade_cost_max: int = 1_000_000_000_000,
 ) -> PerceptionBackend:
     normalized = str(name or "hybrid").lower()
     if normalized == "legacy":
@@ -638,12 +810,22 @@ def create_perception_backend(
             model=model,
             max_output_tokens=openai_max_output_tokens,
             enabled=openai_enabled,
+            known_ore_names=known_ore_names,
+            planet_level_min=planet_level_min,
+            planet_level_max=planet_level_max,
+            upgrade_cost_min=upgrade_cost_min,
+            upgrade_cost_max=upgrade_cost_max,
         )
 
     openai_backend = OpenAIPerceptionBackend(
         model=model,
         max_output_tokens=openai_max_output_tokens,
         enabled=openai_enabled,
+        known_ore_names=known_ore_names,
+        planet_level_min=planet_level_min,
+        planet_level_max=planet_level_max,
+        upgrade_cost_min=upgrade_cost_min,
+        upgrade_cost_max=upgrade_cost_max,
     )
     legacy_backend = LegacyPerceptionBackend()
     windows_backend = WindowsOcrPerceptionBackend()

@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass
 
 from ..decisions import choose_planet_upgrade
 from ..galaxy import PlanetNavigator
+from ..starfield_probe import try_open_nearest_starfield_candidate
 from .base import TaskResult
 
 
@@ -12,6 +13,7 @@ class PlanetsTask:
     reader: object | None = None
     state_reader: object | None = None
     actions: object | None = None
+    capture: object | None = None
     config: object | None = None
     name: str = "planets"
 
@@ -75,13 +77,44 @@ class PlanetsTask:
                 },
             )
         self.actions.reset_ui()
-        open_attempts = max(1, int(getattr(self.config.policy, "planet_panel_open_attempts", 1)))
         initial_panel = None
-        for _ in range(open_attempts):
-            self.actions.open_planet_menu()
-            initial_panel = self.reader.read()
-            if self._panel_readable(initial_panel):
-                break
+        probe_enabled = bool(getattr(getattr(self.config, "starfield", None), "enable_click_probe", False))
+        if probe_enabled:
+            probe = try_open_nearest_starfield_candidate(
+                capture=self.capture,
+                actions=self.actions,
+                reader=self.reader,
+                panel_is_readable=self._panel_readable,
+                settle_seconds=float(getattr(self.config.starfield, "click_probe_settle_seconds", 0.35)),
+                save_annotation=bool(getattr(self.config.starfield, "save_probe_annotation", False)),
+                annotation_dir=str(getattr(self.config.starfield, "probe_annotation_dir", "out/starfield")),
+            )
+            if not probe.ok:
+                self.actions.reset_ui()
+                return TaskResult(
+                    ok=False,
+                    details={
+                        "implemented": True,
+                        "planet_order": [],
+                        "scanned_planets": {},
+                        "planet_panel": asdict(probe.panel) if probe.panel is not None else None,
+                        "cash": None,
+                        "decision": None,
+                        "executed": False,
+                        "verified": False,
+                        "steps": [],
+                        "after_planet_panel": None,
+                        "error": f"starfield_probe_{probe.reason}",
+                    },
+                )
+            initial_panel = probe.panel
+        else:
+            open_attempts = max(1, int(getattr(self.config.policy, "planet_panel_open_attempts", 1)))
+            for _ in range(open_attempts):
+                self.actions.open_planet_menu()
+                initial_panel = self.reader.read()
+                if self._panel_readable(initial_panel):
+                    break
         if not self._panel_readable(initial_panel):
             self.actions.reset_ui()
             return TaskResult(

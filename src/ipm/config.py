@@ -98,6 +98,14 @@ class ActionConfig:
 
 
 @dataclass(slots=True)
+class StarfieldConfig:
+    enable_click_probe: bool = False
+    click_probe_settle_seconds: float = 0.35
+    save_probe_annotation: bool = False
+    probe_annotation_dir: str = "out/starfield"
+
+
+@dataclass(slots=True)
 class PolicyConfig:
     ore_sell_start_quantity: int = 25_000
     ore_keep_quantity: int = 25_000
@@ -115,6 +123,7 @@ class RuntimeConfig:
     perception: PerceptionConfig = field(default_factory=PerceptionConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     actions: ActionConfig = field(default_factory=ActionConfig)
+    starfield: StarfieldConfig = field(default_factory=StarfieldConfig)
     policy: PolicyConfig = field(default_factory=PolicyConfig)
     emergency_stop_hotkey: str = "f10"
     toggle_hotkey: str = "f9"

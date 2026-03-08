@@ -140,6 +140,9 @@ class ActionDriver:
         self._invalidate_capture()
         return True
 
+    def click_client_point(self, point: tuple[int, int], *, delay: float | None = None) -> bool:
+        return self._click_client_point(point, delay=delay)
+
     def click_rect_center(self, rect_key: str, *, delay: float | None = None) -> bool:
         if self.rects is None:
             return False

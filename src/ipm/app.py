@@ -52,6 +52,11 @@ class Application:
             hybrid_order=self.config.perception.hybrid_order,
             openai_enabled=self.config.perception.openai_enabled,
             openai_max_output_tokens=self.config.perception.openai_max_output_tokens,
+            known_ore_names=self.config.policy.known_ore_names,
+            planet_level_min=self.config.perception.semantic_level_min,
+            planet_level_max=self.config.perception.semantic_level_max,
+            upgrade_cost_min=self.config.perception.semantic_upgrade_cost_min,
+            upgrade_cost_max=self.config.perception.semantic_upgrade_cost_max,
         )
         self.rects = RectStore.load(self.config.capture.rects_path)
         self.actions = ActionDriver(self.config, rects=self.rects, capture_backend=self.capture_backend)
@@ -70,6 +75,7 @@ class Application:
                 reader=planet_reader,
                 state_reader=self.state_reader,
                 actions=self.actions,
+                capture=self.capture_backend,
                 config=self.config,
             ),
             "ores": OresTask(

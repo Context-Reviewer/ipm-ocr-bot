@@ -220,13 +220,14 @@ def _component_inside_expanded_bbox(
     component: _Component,
     ship: _Component,
     *,
-    margin: int,
+    x_margin: int,
+    y_margin: int,
 ) -> bool:
     ship_left, ship_top, ship_right, ship_bottom = ship.bbox
-    expanded_left = ship_left - margin
-    expanded_top = ship_top - margin
-    expanded_right = ship_right + margin
-    expanded_bottom = ship_bottom + margin
+    expanded_left = ship_left - x_margin
+    expanded_top = ship_top - y_margin
+    expanded_right = ship_right + x_margin
+    expanded_bottom = ship_bottom + y_margin
     return expanded_left <= component.center_x <= expanded_right and expanded_top <= component.center_y <= expanded_bottom
 
 
@@ -238,7 +239,19 @@ def _component_is_ship_proximal(
 ) -> bool:
     if ship is None:
         return False
-    return _component_inside_expanded_bbox(component, ship, margin=margin)
+    return _component_inside_expanded_bbox(component, ship, x_margin=margin, y_margin=margin)
+
+
+def _component_is_ship_cluster_proximal(
+    component: _Component,
+    ship: _Component | None,
+    *,
+    x_margin: int,
+    y_margin: int,
+) -> bool:
+    if ship is None:
+        return False
+    return _component_inside_expanded_bbox(component, ship, x_margin=x_margin, y_margin=y_margin)
 
 
 def _detect_objects(
@@ -248,6 +261,8 @@ def _detect_objects(
     minimum_area: int,
     minimum_radius: int,
     ship_exclusion_margin: int,
+    ship_cluster_exclusion_x_margin: int,
+    ship_cluster_exclusion_y_margin: int,
 ) -> list[_Component]:
     objects: list[_Component] = []
     for component in components:
@@ -263,6 +278,13 @@ def _detect_objects(
             continue
         if _component_is_ship_proximal(component, ship, margin=ship_exclusion_margin):
             continue
+        if _component_is_ship_cluster_proximal(
+            component,
+            ship,
+            x_margin=ship_cluster_exclusion_x_margin,
+            y_margin=ship_cluster_exclusion_y_margin,
+        ):
+            continue
         objects.append(component)
     return objects
 
@@ -275,6 +297,8 @@ def detect_starfield_scene(
     candidate_min_area: int = 80,
     candidate_min_radius: int = 6,
     ship_exclusion_margin: int = 14,
+    ship_cluster_exclusion_x_margin: int = 0,
+    ship_cluster_exclusion_y_margin: int = 0,
     min_ship_bbox_width: int = 20,
     min_ship_bbox_height: int = 8,
     min_ship_area: int = 150,
@@ -311,6 +335,8 @@ def detect_starfield_scene(
         minimum_area=max(12, int(candidate_min_area)),
         minimum_radius=max(1, int(candidate_min_radius)),
         ship_exclusion_margin=max(0, int(ship_exclusion_margin)),
+        ship_cluster_exclusion_x_margin=max(0, int(ship_cluster_exclusion_x_margin)),
+        ship_cluster_exclusion_y_margin=max(0, int(ship_cluster_exclusion_y_margin)),
     )
     ship_x = (detected_ship.center_x + left) if detected_ship is not None else None
     ship_y = (detected_ship.center_y + top) if detected_ship is not None else None

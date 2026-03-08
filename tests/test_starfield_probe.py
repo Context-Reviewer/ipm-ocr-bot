@@ -140,6 +140,24 @@ def test_starfield_probe_fails_closed_when_requested_rank_is_unavailable():
     assert actions.calls == []
 
 
+def test_starfield_probe_rank_becomes_unavailable_after_ship_cluster_exclusion():
+    actions = FakeActions()
+    result = try_open_starfield_candidate_by_rank(
+        capture=FakeCapture(_scene_image(ship_center=(160, 160), objects=((205, 94, 12),))),
+        actions=actions,
+        reader=FakeReader(PlanetPanelState(planet_id=1, title="1. BALOR")),
+        target_rank=1,
+        panel_is_readable=_panel_is_readable,
+        ship_cluster_exclusion_x_margin=60,
+        ship_cluster_exclusion_y_margin=90,
+        settle_seconds=0.0,
+    )
+    assert result.ok is False
+    assert result.reason == "no_candidate"
+    assert result.rank == 1
+    assert actions.calls == []
+
+
 def test_starfield_probe_selects_nearest_candidate_and_confirms_panel():
     actions = FakeActions()
     result = try_open_nearest_starfield_candidate(

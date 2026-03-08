@@ -127,6 +127,38 @@ def test_detect_starfield_scene_excludes_ship_adjacent_artifact_blob():
     assert (ranked[0].center_x, ranked[0].center_y) == (238, 160)
 
 
+def test_detect_starfield_scene_excludes_broader_ship_cluster_blob():
+    image = _scene_image(
+        ship_center=(160, 160),
+        ship_size=(44, 16),
+        objects=((205, 94, 12), (50, 216, 12)),
+    )
+    scene = detect_starfield_scene(
+        image,
+        ship_exclusion_margin=14,
+        ship_cluster_exclusion_x_margin=60,
+        ship_cluster_exclusion_y_margin=90,
+    )
+    ranked = get_ranked_planet_candidates(scene)
+    assert len(ranked) == 1
+    assert (ranked[0].center_x, ranked[0].center_y) == (50, 216)
+
+
+def test_detect_starfield_scene_cluster_exclusion_can_leave_no_candidates():
+    image = _scene_image(
+        ship_center=(160, 160),
+        ship_size=(44, 16),
+        objects=((205, 94, 12),),
+    )
+    scene = detect_starfield_scene(
+        image,
+        ship_exclusion_margin=14,
+        ship_cluster_exclusion_x_margin=60,
+        ship_cluster_exclusion_y_margin=90,
+    )
+    assert get_ranked_planet_candidates(scene) == []
+
+
 def test_detect_starfield_scene_filters_tiny_background_blob_by_size():
     image = _scene_image(
         ship_center=(160, 160),

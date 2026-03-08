@@ -111,6 +111,8 @@ class StarfieldConfig:
         (0.0, 0.0, 0.12, 0.18),
     )
     ship_exclusion_margin: int = 14
+    ship_cluster_exclusion_x_margin: int = 60
+    ship_cluster_exclusion_y_margin: int = 110
     candidate_min_radius: int = 6
     candidate_min_area: int = 80
     min_ship_bbox_width: int = 20

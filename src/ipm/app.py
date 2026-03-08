@@ -175,6 +175,12 @@ class Application:
             scene_viewport=getattr(self.config.starfield, "scene_viewport", None),
             scene_exclusion_zones=getattr(self.config.starfield, "scene_exclusion_zones", None),
             ship_exclusion_margin=int(getattr(self.config.starfield, "ship_exclusion_margin", 14)),
+            ship_cluster_exclusion_x_margin=int(
+                getattr(self.config.starfield, "ship_cluster_exclusion_x_margin", 60)
+            ),
+            ship_cluster_exclusion_y_margin=int(
+                getattr(self.config.starfield, "ship_cluster_exclusion_y_margin", 110)
+            ),
             candidate_min_radius=int(getattr(self.config.starfield, "candidate_min_radius", 6)),
             candidate_min_area=int(getattr(self.config.starfield, "candidate_min_area", 80)),
             min_ship_bbox_width=int(getattr(self.config.starfield, "min_ship_bbox_width", 20)),
@@ -236,6 +242,12 @@ class Application:
             scene_viewport=getattr(self.config.starfield, "scene_viewport", None),
             scene_exclusion_zones=getattr(self.config.starfield, "scene_exclusion_zones", None),
             ship_exclusion_margin=int(getattr(self.config.starfield, "ship_exclusion_margin", 14)),
+            ship_cluster_exclusion_x_margin=int(
+                getattr(self.config.starfield, "ship_cluster_exclusion_x_margin", 60)
+            ),
+            ship_cluster_exclusion_y_margin=int(
+                getattr(self.config.starfield, "ship_cluster_exclusion_y_margin", 110)
+            ),
             candidate_min_radius=int(getattr(self.config.starfield, "candidate_min_radius", 6)),
             candidate_min_area=int(getattr(self.config.starfield, "candidate_min_area", 80)),
             min_ship_bbox_width=int(getattr(self.config.starfield, "min_ship_bbox_width", 20)),

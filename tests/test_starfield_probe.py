@@ -3,9 +3,11 @@ from PIL import Image
 from ipm.starfield_probe import (
     PlanetDiscoveryResult,
     discover_nearest_starfield_planet,
+    discover_starfield_planet_by_rank,
     StarfieldProbeResult,
     resolve_starfield_exclusion_zones,
     resolve_starfield_viewport,
+    try_open_starfield_candidate_by_rank,
     try_open_nearest_starfield_candidate,
 )
 from ipm.state import PlanetPanelState
@@ -122,6 +124,22 @@ def test_starfield_probe_fails_closed_when_no_candidates():
     assert result.reason == "no_candidate"
 
 
+def test_starfield_probe_fails_closed_when_requested_rank_is_unavailable():
+    actions = FakeActions()
+    result = try_open_starfield_candidate_by_rank(
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((200, 120, 12),))),
+        actions=actions,
+        reader=FakeReader(PlanetPanelState(planet_id=1, title="1. BALOR")),
+        target_rank=2,
+        panel_is_readable=_panel_is_readable,
+        settle_seconds=0.0,
+    )
+    assert result.ok is False
+    assert result.reason == "candidate_rank_unavailable"
+    assert result.rank == 2
+    assert actions.calls == []
+
+
 def test_starfield_probe_selects_nearest_candidate_and_confirms_panel():
     actions = FakeActions()
     result = try_open_nearest_starfield_candidate(
@@ -135,6 +153,23 @@ def test_starfield_probe_selects_nearest_candidate_and_confirms_panel():
     assert result.reason == "open_confirmed"
     assert result.target_point == (200, 120)
     assert actions.calls[0][0] == "click_client_point"
+
+
+def test_starfield_probe_selects_requested_rank_deterministically():
+    actions = FakeActions()
+    result = try_open_starfield_candidate_by_rank(
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((200, 120, 12), (250, 120, 14)))),
+        actions=actions,
+        reader=FakeReader(PlanetPanelState(planet_id=1, title="1. BALOR")),
+        target_rank=2,
+        panel_is_readable=_panel_is_readable,
+        settle_seconds=0.0,
+    )
+    assert result.ok is True
+    assert result.reason == "open_confirmed"
+    assert result.rank == 2
+    assert result.target_point == (250, 120)
+    assert actions.calls[0] == ("click_client_point", (250, 120), 0.0)
 
 
 def test_starfield_probe_failed_confirmation_is_not_success():
@@ -225,6 +260,52 @@ def test_discover_nearest_starfield_planet_resolves_canonical_identity():
     assert result.planet_title_canonical == "Drasta"
     assert result.planet_id == 2
     assert result.returned_to_starfield is True
+
+
+def test_discover_starfield_planet_by_rank_selects_second_candidate():
+    result = discover_starfield_planet_by_rank(
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((200, 120, 12), (250, 120, 14)))),
+        actions=FakeActions(),
+        reader=FakeReader(
+            PlanetPanelState(
+                planet_id=4,
+                title="DHOLEN",
+                mining_level=2,
+                mining_cost=233,
+                speed_cost=106,
+                cargo_cost=29,
+            )
+        ),
+        target_rank=2,
+        panel_is_readable=_panel_is_readable,
+        panel_is_confirmed=PlanetsTask._probe_panel_confirmed,
+        return_to_starfield=lambda: True,
+        settle_seconds=0.0,
+    )
+    assert result.ok is True
+    assert result.reason == "ok"
+    assert result.target_rank == 2
+    assert result.target_point == (250, 120)
+    assert result.planet_title_canonical == "Dholen"
+
+
+def test_discover_starfield_planet_by_rank_fails_closed_when_rank_is_unavailable():
+    actions = FakeActions()
+    result = discover_starfield_planet_by_rank(
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((200, 120, 12),))),
+        actions=actions,
+        reader=FakeReader(PlanetPanelState(planet_id=4, title="DHOLEN", mining_level=2, mining_cost=233)),
+        target_rank=3,
+        panel_is_readable=_panel_is_readable,
+        panel_is_confirmed=PlanetsTask._probe_panel_confirmed,
+        return_to_starfield=lambda: True,
+        settle_seconds=0.0,
+    )
+    assert result.ok is False
+    assert result.reason == "candidate_rank_unavailable"
+    assert result.target_rank == 3
+    assert result.target_point is None
+    assert actions.calls == []
 
 
 def test_discover_nearest_starfield_planet_fails_when_identity_is_unresolved():

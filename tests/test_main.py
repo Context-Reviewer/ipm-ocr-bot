@@ -15,6 +15,10 @@ class FakeApp:
         self.calls.append(("run_discover_nearest_planet_once",))
         return self.discovery_result
 
+    def run_discover_planet_rank_once(self, rank):
+        self.calls.append(("run_discover_planet_rank_once", rank))
+        return self.discovery_result
+
     def run_forever(self):
         self.calls.append(("run_forever",))
 
@@ -49,6 +53,26 @@ def test_main_returns_failure_code_when_discovery_once_fails(monkeypatch):
     result = main_module.main(["--discover-nearest-planet-once"])
     assert result == 1
     assert app.calls == [("run_discover_nearest_planet_once",)]
+
+
+def test_main_runs_ranked_discovery_once_when_flag_is_used(monkeypatch):
+    app = FakeApp(discovery_result=0)
+    monkeypatch.setattr(main_module, "build_application", lambda: app)
+    result = main_module.main(["--discover-planet-rank", "2"])
+    assert result == 0
+    assert app.calls == [("run_discover_planet_rank_once", 2)]
+
+
+def test_main_rejects_invalid_discovery_rank(monkeypatch):
+    app = FakeApp()
+    monkeypatch.setattr(main_module, "build_application", lambda: app)
+    try:
+        main_module.main(["--discover-planet-rank", "0"])
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("expected SystemExit for invalid rank")
+    assert app.calls == []
 
 
 def test_main_keeps_normal_runtime_path_without_flag(monkeypatch):

@@ -11,7 +11,7 @@ from .starfield_scene import (
     annotate_starfield_scene,
     detect_starfield_scene,
     format_starfield_scene_debug,
-    select_nearest_candidate,
+    get_ranked_planet_candidates,
 )
 
 
@@ -97,10 +97,17 @@ def maybe_save_starfield_annotation(
 
 
 def try_open_nearest_starfield_candidate(
+    **kwargs,
+) -> StarfieldProbeResult:
+    return try_open_starfield_candidate_by_rank(target_rank=1, **kwargs)
+
+
+def try_open_starfield_candidate_by_rank(
     *,
     capture: object,
     actions: object,
     reader: object,
+    target_rank: int = 1,
     panel_is_readable,
     starfield_ready_check=None,
     panel_is_confirmed=None,
@@ -128,15 +135,16 @@ def try_open_nearest_starfield_candidate(
             else:
                 reason, panel = str(precheck), None
             print(f"[PLANET_NAV] open_failed reason={reason}")
-            return StarfieldProbeResult(ok=False, reason=str(reason), panel=panel)
+            return StarfieldProbeResult(ok=False, reason=str(reason), rank=max(1, int(target_rank)), panel=panel)
+    target_rank = max(1, int(target_rank))
     capture_screen = getattr(capture, "capture_screen", None)
     if not callable(capture_screen):
         print("[PLANET_NAV] open_failed reason=capture_unavailable")
-        return StarfieldProbeResult(ok=False, reason="capture_unavailable")
+        return StarfieldProbeResult(ok=False, reason="capture_unavailable", rank=target_rank)
     image = capture_screen()
     if image is None:
         print("[PLANET_NAV] open_failed reason=capture_unavailable")
-        return StarfieldProbeResult(ok=False, reason="capture_unavailable")
+        return StarfieldProbeResult(ok=False, reason="capture_unavailable", rank=target_rank)
     resolved_viewport = resolve_starfield_viewport(image.size, scene_viewport)
     scene = detect_starfield_scene(
         image,
@@ -156,20 +164,24 @@ def try_open_nearest_starfield_candidate(
     print(format_starfield_scene_debug(scene))
     if scene.ship_reject_reason is not None:
         print(f"[PLANET_NAV] open_failed reason=ship_implausible detail={scene.ship_reject_reason}")
-        return StarfieldProbeResult(ok=False, reason="ship_implausible", scene=scene)
+        return StarfieldProbeResult(ok=False, reason="ship_implausible", scene=scene, rank=target_rank)
     if scene.ship_center_x is None or scene.ship_center_y is None:
         print("[PLANET_NAV] open_failed reason=ship_missing")
-        return StarfieldProbeResult(ok=False, reason="ship_missing", scene=scene)
-    target = select_nearest_candidate(scene)
-    if target is None:
+        return StarfieldProbeResult(ok=False, reason="ship_missing", scene=scene, rank=target_rank)
+    ranked = get_ranked_planet_candidates(scene)
+    if not ranked:
         print("[PLANET_NAV] open_failed reason=no_candidate")
-        return StarfieldProbeResult(ok=False, reason="no_candidate", scene=scene)
+        return StarfieldProbeResult(ok=False, reason="no_candidate", scene=scene, rank=target_rank)
+    if target_rank > len(ranked):
+        print(f"[PLANET_NAV] open_failed reason=candidate_rank_unavailable rank={target_rank}")
+        return StarfieldProbeResult(ok=False, reason="candidate_rank_unavailable", scene=scene, rank=target_rank)
+    target = ranked[target_rank - 1]
     if save_annotation:
         saved_path = maybe_save_starfield_annotation(image, scene, output_dir=annotation_dir)
         if saved_path:
             print(f"[STARFIELD] saved_annotation={saved_path}")
     target_point = (target.center_x, target.center_y)
-    print(f"[PLANET_NAV] target=({target.center_x},{target.center_y}) rank=1")
+    print(f"[PLANET_NAV] target=({target.center_x},{target.center_y}) rank={target_rank}")
     click_point = getattr(actions, "click_client_point", None)
     if not callable(click_point) or not click_point(target_point, delay=settle_seconds):
         print("[PLANET_NAV] open_failed reason=click_failed")
@@ -178,7 +190,7 @@ def try_open_nearest_starfield_candidate(
             reason="click_failed",
             scene=scene,
             target_point=target_point,
-            rank=1,
+            rank=target_rank,
         )
     panel = reader.read()
     if not panel_is_readable(panel):
@@ -188,7 +200,7 @@ def try_open_nearest_starfield_candidate(
             reason="panel_not_visible",
             scene=scene,
             target_point=target_point,
-            rank=1,
+            rank=target_rank,
             panel=panel,
         )
     if callable(panel_is_confirmed) and not panel_is_confirmed(panel):
@@ -198,7 +210,7 @@ def try_open_nearest_starfield_candidate(
             reason="panel_not_confirmed",
             scene=scene,
             target_point=target_point,
-            rank=1,
+            rank=target_rank,
             panel=panel,
         )
     print("[PLANET_NAV] open_confirmed")
@@ -207,7 +219,7 @@ def try_open_nearest_starfield_candidate(
         reason="open_confirmed",
         scene=scene,
         target_point=target_point,
-        rank=1,
+        rank=target_rank,
         panel=panel,
     )
 
@@ -217,7 +229,16 @@ def discover_nearest_starfield_planet(
     return_to_starfield=None,
     **kwargs,
 ) -> PlanetDiscoveryResult:
-    probe = try_open_nearest_starfield_candidate(**kwargs)
+    return discover_starfield_planet_by_rank(target_rank=1, return_to_starfield=return_to_starfield, **kwargs)
+
+
+def discover_starfield_planet_by_rank(
+    *,
+    target_rank: int = 1,
+    return_to_starfield=None,
+    **kwargs,
+) -> PlanetDiscoveryResult:
+    probe = try_open_starfield_candidate_by_rank(target_rank=target_rank, **kwargs)
     ship_center = None
     if probe.scene is not None and probe.scene.ship_center_x is not None and probe.scene.ship_center_y is not None:
         ship_center = (probe.scene.ship_center_x, probe.scene.ship_center_y)

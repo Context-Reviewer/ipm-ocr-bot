@@ -15,7 +15,10 @@ from .readers import HudReader, OrePanelReader, PlanetPanelReader, SellDialogRea
 from .rects import RectStore
 from .runtime import RuntimeState
 from .scheduler import ScheduledTask, Scheduler
-from .starfield_probe import discover_nearest_starfield_planet, try_open_nearest_starfield_candidate
+from .starfield_probe import (
+    discover_starfield_planet_by_rank,
+    try_open_nearest_starfield_candidate,
+)
 from .state_reader import GameStateReader
 from .tasks import OresTask, PlanetsTask
 
@@ -191,6 +194,9 @@ class Application:
         return 0 if probe.ok else 1
 
     def run_discover_nearest_planet_once(self) -> int:
+        return self.run_discover_planet_rank_once(1)
+
+    def run_discover_planet_rank_once(self, target_rank: int) -> int:
         if not bool(getattr(self.config.starfield, "enable_click_probe", False)):
             print("[PLANET_DISCOVERY] result=probe_disabled")
             return 1
@@ -215,10 +221,11 @@ class Application:
             panel = planet_task.reader.read()
             return not planet_task._panel_readable(panel)
 
-        discovery = discover_nearest_starfield_planet(
+        discovery = discover_starfield_planet_by_rank(
             capture=self.capture_backend,
             actions=self.actions,
             reader=planet_task.reader,
+            target_rank=target_rank,
             panel_is_readable=planet_task._panel_readable,
             starfield_ready_check=_starfield_ready_check,
             panel_is_confirmed=planet_task._probe_panel_confirmed,

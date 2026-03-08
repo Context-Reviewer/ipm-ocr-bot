@@ -22,23 +22,39 @@ class FakeCapture:
 
 
 class FakeActions:
-    def __init__(self, click_ok=True):
+    def __init__(self, click_ok=True, close_ok=True):
         self.calls = []
         self.click_ok = click_ok
+        self.close_ok = close_ok
 
     def click_client_point(self, point, *, delay=None):
         self.calls.append(("click_client_point", point, delay))
         return self.click_ok
 
+    def open_planet_menu(self):
+        self.calls.append(("open_planet_menu",))
+        return self.close_ok
+
 
 class FakeReader:
     def __init__(self, panel):
-        self.panel = panel
+        if isinstance(panel, list):
+            self.panels = list(panel)
+            self.panel = self.panels[-1] if self.panels else None
+        else:
+            self.panels = None
+            self.panel = panel
         self.calls = 0
 
     def read(self):
         self.calls += 1
-        return self.panel
+        if self.panels is None:
+            return self.panel
+        if not self.panels:
+            return None
+        value = self.panels.pop(0)
+        self.panel = value
+        return value
 
 
 def _scene_image(*, ship_center=None, ship_size=(36, 18), objects=()):
@@ -198,6 +214,7 @@ def test_discover_nearest_starfield_planet_resolves_canonical_identity():
         ),
         panel_is_readable=_panel_is_readable,
         panel_is_confirmed=PlanetsTask._probe_panel_confirmed,
+        return_to_starfield=lambda: True,
         settle_seconds=0.0,
     )
     assert result.ok is True
@@ -207,6 +224,7 @@ def test_discover_nearest_starfield_planet_resolves_canonical_identity():
     assert result.planet_title_raw == "DRAŠTA"
     assert result.planet_title_canonical == "Drasta"
     assert result.planet_id == 2
+    assert result.returned_to_starfield is True
 
 
 def test_discover_nearest_starfield_planet_fails_when_identity_is_unresolved():
@@ -238,6 +256,68 @@ def test_discover_nearest_starfield_planet_preserves_fail_closed_reason():
     assert result.ok is False
     assert result.reason == "not_starfield_ready"
     assert result.target_point is None
+
+
+def test_discover_nearest_starfield_planet_reports_return_to_starfield_failure():
+    result = discover_nearest_starfield_planet(
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((200, 120, 12),))),
+        actions=FakeActions(),
+        reader=FakeReader(
+            PlanetPanelState(
+                planet_id=4,
+                title="DHOLEN",
+                mining_level=2,
+                mining_cost=233,
+                speed_cost=106,
+                cargo_cost=29,
+            )
+        ),
+        panel_is_readable=_panel_is_readable,
+        panel_is_confirmed=PlanetsTask._probe_panel_confirmed,
+        return_to_starfield=lambda: False,
+        settle_seconds=0.0,
+    )
+    assert result.ok is True
+    assert result.reason == "return_to_starfield_failed"
+    assert result.planet_title_canonical == "Dholen"
+    assert result.returned_to_starfield is False
+
+
+def test_discover_nearest_starfield_planet_returns_to_starfield_after_success():
+    actions = FakeActions(close_ok=True)
+    reader = FakeReader(
+        [
+            PlanetPanelState(
+                planet_id=4,
+                title="DHOLEN",
+                mining_level=2,
+                mining_cost=233,
+                speed_cost=106,
+                cargo_cost=29,
+            ),
+            PlanetPanelState(),
+        ]
+    )
+
+    def _return_to_starfield() -> bool:
+        if not actions.open_planet_menu():
+            return False
+        return not _panel_is_readable(reader.read())
+
+    result = discover_nearest_starfield_planet(
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((200, 120, 12),))),
+        actions=actions,
+        reader=reader,
+        panel_is_readable=_panel_is_readable,
+        panel_is_confirmed=PlanetsTask._probe_panel_confirmed,
+        return_to_starfield=_return_to_starfield,
+        settle_seconds=0.0,
+    )
+    assert result.ok is True
+    assert result.reason == "ok"
+    assert result.planet_title_canonical == "Dholen"
+    assert result.returned_to_starfield is True
+    assert ("open_planet_menu",) in actions.calls
 
 
 def test_resolve_starfield_viewport_converts_normalized_bounds():

@@ -209,6 +209,12 @@ class Application:
                 return None
             return (reason, panel)
 
+        def _return_to_starfield() -> bool:
+            if not self.actions.open_planet_menu():
+                return False
+            panel = planet_task.reader.read()
+            return not planet_task._panel_readable(panel)
+
         discovery = discover_nearest_starfield_planet(
             capture=self.capture_backend,
             actions=self.actions,
@@ -216,6 +222,7 @@ class Application:
             panel_is_readable=planet_task._panel_readable,
             starfield_ready_check=_starfield_ready_check,
             panel_is_confirmed=planet_task._probe_panel_confirmed,
+            return_to_starfield=_return_to_starfield,
             settle_seconds=float(getattr(self.config.starfield, "click_probe_settle_seconds", 0.35)),
             save_annotation=bool(getattr(self.config.starfield, "save_probe_annotation", False)),
             annotation_dir=str(getattr(self.config.starfield, "probe_annotation_dir", "out/starfield")),
@@ -240,7 +247,8 @@ class Application:
         rank = f" rank={discovery.target_rank}" if discovery.target_rank is not None else ""
         title_raw = f' title_raw="{discovery.planet_title_raw}"' if discovery.planet_title_raw else ""
         title = f' title="{discovery.planet_title_canonical}"' if discovery.planet_title_canonical else ""
-        print(f"[PLANET_DISCOVERY] result={discovery.reason}{rank}{target}{title_raw}{title}")
+        returned = f" returned_to_starfield={'true' if discovery.returned_to_starfield else 'false'}"
+        print(f"[PLANET_DISCOVERY] result={discovery.reason}{rank}{target}{title_raw}{title}{returned}")
         return 0 if discovery.ok else 1
 
 

@@ -35,6 +35,7 @@ class PlanetDiscoveryResult:
     planet_title_raw: str | None = None
     planet_title_canonical: str | None = None
     planet_id: int | None = None
+    returned_to_starfield: bool = False
     panel: object | None = None
     scene: StarfieldScene | None = None
 
@@ -212,6 +213,8 @@ def try_open_nearest_starfield_candidate(
 
 
 def discover_nearest_starfield_planet(
+    *,
+    return_to_starfield=None,
     **kwargs,
 ) -> PlanetDiscoveryResult:
     probe = try_open_nearest_starfield_candidate(**kwargs)
@@ -242,15 +245,17 @@ def discover_nearest_starfield_planet(
             scene=probe.scene,
         )
     planet_id = getattr(probe.panel, "planet_id", None)
+    returned_to_starfield = bool(callable(return_to_starfield) and return_to_starfield())
     return PlanetDiscoveryResult(
         ok=True,
-        reason="ok",
+        reason="ok" if returned_to_starfield else "return_to_starfield_failed",
         target_rank=probe.rank,
         target_point=probe.target_point,
         ship_center=ship_center,
         planet_title_raw=raw_title,
         planet_title_canonical=canonical_title,
         planet_id=int(planet_id) if planet_id is not None else None,
+        returned_to_starfield=returned_to_starfield,
         panel=probe.panel,
         scene=probe.scene,
     )

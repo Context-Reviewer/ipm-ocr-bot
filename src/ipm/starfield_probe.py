@@ -5,6 +5,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from .domain_data import normalize_planet_name
 from .starfield_scene import (
     StarfieldScene,
     annotate_starfield_scene,
@@ -22,6 +23,20 @@ class StarfieldProbeResult:
     target_point: tuple[int, int] | None = None
     rank: int | None = None
     panel: object | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class PlanetDiscoveryResult:
+    ok: bool
+    reason: str
+    target_rank: int | None = None
+    target_point: tuple[int, int] | None = None
+    ship_center: tuple[int, int] | None = None
+    planet_title_raw: str | None = None
+    planet_title_canonical: str | None = None
+    planet_id: int | None = None
+    panel: object | None = None
+    scene: StarfieldScene | None = None
 
 
 def resolve_starfield_viewport(
@@ -193,4 +208,49 @@ def try_open_nearest_starfield_candidate(
         target_point=target_point,
         rank=1,
         panel=panel,
+    )
+
+
+def discover_nearest_starfield_planet(
+    **kwargs,
+) -> PlanetDiscoveryResult:
+    probe = try_open_nearest_starfield_candidate(**kwargs)
+    ship_center = None
+    if probe.scene is not None and probe.scene.ship_center_x is not None and probe.scene.ship_center_y is not None:
+        ship_center = (probe.scene.ship_center_x, probe.scene.ship_center_y)
+    if not probe.ok:
+        return PlanetDiscoveryResult(
+            ok=False,
+            reason=probe.reason,
+            target_rank=probe.rank,
+            target_point=probe.target_point,
+            ship_center=ship_center,
+            panel=probe.panel,
+            scene=probe.scene,
+        )
+    raw_title = str(getattr(probe.panel, "title", "")).strip() or None
+    canonical_title = normalize_planet_name(raw_title)
+    if not canonical_title:
+        return PlanetDiscoveryResult(
+            ok=False,
+            reason="planet_identity_unresolved",
+            target_rank=probe.rank,
+            target_point=probe.target_point,
+            ship_center=ship_center,
+            planet_title_raw=raw_title,
+            panel=probe.panel,
+            scene=probe.scene,
+        )
+    planet_id = getattr(probe.panel, "planet_id", None)
+    return PlanetDiscoveryResult(
+        ok=True,
+        reason="ok",
+        target_rank=probe.rank,
+        target_point=probe.target_point,
+        ship_center=ship_center,
+        planet_title_raw=raw_title,
+        planet_title_canonical=canonical_title,
+        planet_id=int(planet_id) if planet_id is not None else None,
+        panel=probe.panel,
+        scene=probe.scene,
     )

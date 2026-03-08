@@ -1,6 +1,8 @@
 from PIL import Image
 
 from ipm.starfield_probe import (
+    PlanetDiscoveryResult,
+    discover_nearest_starfield_planet,
     StarfieldProbeResult,
     resolve_starfield_exclusion_zones,
     resolve_starfield_viewport,
@@ -177,6 +179,65 @@ def test_starfield_probe_fails_closed_when_ship_is_too_thin():
     assert result.scene is not None
     assert result.scene.ship_reject_reason == "min_bbox_height"
     assert actions.calls == []
+
+
+def test_discover_nearest_starfield_planet_resolves_canonical_identity():
+    actions = FakeActions()
+    result = discover_nearest_starfield_planet(
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((200, 120, 12), (250, 120, 14)))),
+        actions=actions,
+        reader=FakeReader(
+            PlanetPanelState(
+                planet_id=2,
+                title="DRAŠTA",
+                mining_level=2,
+                mining_cost=233,
+                speed_cost=106,
+                cargo_cost=29,
+            )
+        ),
+        panel_is_readable=_panel_is_readable,
+        panel_is_confirmed=PlanetsTask._probe_panel_confirmed,
+        settle_seconds=0.0,
+    )
+    assert result.ok is True
+    assert result.reason == "ok"
+    assert result.target_rank == 1
+    assert result.target_point == (200, 120)
+    assert result.planet_title_raw == "DRAŠTA"
+    assert result.planet_title_canonical == "Drasta"
+    assert result.planet_id == 2
+
+
+def test_discover_nearest_starfield_planet_fails_when_identity_is_unresolved():
+    result = discover_nearest_starfield_planet(
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((200, 120, 12),))),
+        actions=FakeActions(),
+        reader=FakeReader(PlanetPanelState(title="MYSTERY", mining_level=2, mining_cost=233)),
+        panel_is_readable=_panel_is_readable,
+        panel_is_confirmed=lambda panel: True,
+        settle_seconds=0.0,
+    )
+    assert result.ok is False
+    assert result.reason == "planet_identity_unresolved"
+    assert result.planet_title_raw == "MYSTERY"
+    assert result.planet_title_canonical is None
+
+
+def test_discover_nearest_starfield_planet_preserves_fail_closed_reason():
+    open_panel = PlanetPanelState(planet_id=2, title="DRAŠTA", mining_level=2, mining_cost=233)
+    result = discover_nearest_starfield_planet(
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((200, 120, 12),))),
+        actions=FakeActions(),
+        reader=FakeReader(open_panel),
+        panel_is_readable=_panel_is_readable,
+        starfield_ready_check=lambda: ("not_starfield_ready", open_panel),
+        panel_is_confirmed=PlanetsTask._probe_panel_confirmed,
+        settle_seconds=0.0,
+    )
+    assert result.ok is False
+    assert result.reason == "not_starfield_ready"
+    assert result.target_point is None
 
 
 def test_resolve_starfield_viewport_converts_normalized_bounds():

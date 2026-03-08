@@ -2,13 +2,18 @@ import main as main_module
 
 
 class FakeApp:
-    def __init__(self, *, probe_result=0):
+    def __init__(self, *, probe_result=0, discovery_result=0):
         self.calls = []
         self.probe_result = probe_result
+        self.discovery_result = discovery_result
 
     def run_starfield_probe_once(self):
         self.calls.append(("run_starfield_probe_once",))
         return self.probe_result
+
+    def run_discover_nearest_planet_once(self):
+        self.calls.append(("run_discover_nearest_planet_once",))
+        return self.discovery_result
 
     def run_forever(self):
         self.calls.append(("run_forever",))
@@ -28,6 +33,22 @@ def test_main_returns_failure_code_when_probe_once_fails(monkeypatch):
     result = main_module.main(["--starfield-probe-once"])
     assert result == 1
     assert app.calls == [("run_starfield_probe_once",)]
+
+
+def test_main_runs_discovery_once_when_flag_is_used(monkeypatch):
+    app = FakeApp(discovery_result=0)
+    monkeypatch.setattr(main_module, "build_application", lambda: app)
+    result = main_module.main(["--discover-nearest-planet-once"])
+    assert result == 0
+    assert app.calls == [("run_discover_nearest_planet_once",)]
+
+
+def test_main_returns_failure_code_when_discovery_once_fails(monkeypatch):
+    app = FakeApp(discovery_result=1)
+    monkeypatch.setattr(main_module, "build_application", lambda: app)
+    result = main_module.main(["--discover-nearest-planet-once"])
+    assert result == 1
+    assert app.calls == [("run_discover_nearest_planet_once",)]
 
 
 def test_main_keeps_normal_runtime_path_without_flag(monkeypatch):

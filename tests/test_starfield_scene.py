@@ -155,6 +155,32 @@ def test_detect_starfield_scene_rejects_implausibly_large_ship_anchor():
     assert get_ranked_planet_candidates(scene) == []
 
 
+def test_detect_starfield_scene_rejects_too_thin_ship_anchor():
+    image = _scene_image(ship_center=(160, 120), ship_size=(31, 2), objects=((220, 120, 14),))
+    scene = detect_starfield_scene(
+        image,
+        min_ship_bbox_width=20,
+        min_ship_bbox_height=8,
+        min_ship_area=150,
+    )
+    assert scene.ship_center_x is not None
+    assert scene.ship_reject_reason == "min_bbox_height"
+    assert get_ranked_planet_candidates(scene) == []
+
+
+def test_detect_starfield_scene_rejects_too_small_ship_area():
+    image = _scene_image(ship_center=(160, 120), ship_size=(8, 12), objects=((220, 120, 14),))
+    scene = detect_starfield_scene(
+        image,
+        min_ship_bbox_width=6,
+        min_ship_bbox_height=8,
+        min_ship_area=150,
+    )
+    assert scene.ship_center_x is not None
+    assert scene.ship_reject_reason == "min_area"
+    assert get_ranked_planet_candidates(scene) == []
+
+
 def test_ranked_candidates_sort_deterministically():
     scene = StarfieldScene(
         ship_center_x=100,
@@ -194,3 +220,17 @@ def test_format_starfield_scene_debug_is_concise_and_includes_rank_order():
     assert "exclusions=1" in text
     assert "candidates=2" in text
     assert "#1@(120,100) d=20.0 r=10 a=180" in text
+
+
+def test_format_starfield_scene_debug_includes_ship_reject_reason():
+    scene = StarfieldScene(
+        ship_center_x=141,
+        ship_center_y=543,
+        ship_radius=16,
+        ship_bbox=(126, 542, 157, 544),
+        ship_area=42,
+        ship_reject_reason="min_bbox_height",
+        objects=(),
+    )
+    text = format_starfield_scene_debug(scene)
+    assert "ship=(141,543) r=16 bbox=31x2 a=42 invalid=min_bbox_height" in text

@@ -113,6 +113,9 @@ class StarfieldConfig:
     ship_exclusion_margin: int = 14
     candidate_min_radius: int = 6
     candidate_min_area: int = 80
+    min_ship_bbox_width: int = 20
+    min_ship_bbox_height: int = 8
+    min_ship_area: int = 150
     max_ship_radius: int = 72
     max_ship_bbox_width: int = 140
     max_ship_bbox_height: int = 90

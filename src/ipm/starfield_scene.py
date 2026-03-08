@@ -188,6 +188,9 @@ def _ship_reject_reason(
     ship: _Component | None,
     *,
     image_size: tuple[int, int],
+    min_bbox_width: int,
+    min_bbox_height: int,
+    min_area: int,
     max_radius: int,
     max_bbox_width: int,
     max_bbox_height: int,
@@ -195,6 +198,12 @@ def _ship_reject_reason(
 ) -> str | None:
     if ship is None:
         return None
+    if ship.width < min_bbox_width:
+        return "min_bbox_width"
+    if ship.height < min_bbox_height:
+        return "min_bbox_height"
+    if ship.area < min_area:
+        return "min_area"
     if ship.radius > max_radius:
         return "max_radius"
     if ship.width > max_bbox_width:
@@ -266,6 +275,9 @@ def detect_starfield_scene(
     candidate_min_area: int = 80,
     candidate_min_radius: int = 6,
     ship_exclusion_margin: int = 14,
+    min_ship_bbox_width: int = 20,
+    min_ship_bbox_height: int = 8,
+    min_ship_area: int = 150,
     max_ship_radius: int = 72,
     max_ship_bbox_width: int = 140,
     max_ship_bbox_height: int = 90,
@@ -284,6 +296,9 @@ def detect_starfield_scene(
     ship_reject_reason = _ship_reject_reason(
         detected_ship,
         image_size=working_image.size,
+        min_bbox_width=max(1, int(min_ship_bbox_width)),
+        min_bbox_height=max(1, int(min_ship_bbox_height)),
+        min_area=max(1, int(min_ship_area)),
         max_radius=max(1, int(max_ship_radius)),
         max_bbox_width=max(1, int(max_ship_bbox_width)),
         max_bbox_height=max(1, int(max_ship_bbox_height)),

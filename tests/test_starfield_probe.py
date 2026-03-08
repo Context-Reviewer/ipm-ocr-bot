@@ -160,6 +160,25 @@ def test_starfield_probe_fails_closed_when_ship_is_implausible():
     assert result.reason == "ship_implausible"
 
 
+def test_starfield_probe_fails_closed_when_ship_is_too_thin():
+    actions = FakeActions()
+    result = try_open_nearest_starfield_candidate(
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), ship_size=(31, 2), objects=((260, 120, 14),))),
+        actions=actions,
+        reader=FakeReader(PlanetPanelState(planet_id=1, title="1. BALOR")),
+        panel_is_readable=_panel_is_readable,
+        settle_seconds=0.0,
+        min_ship_bbox_width=20,
+        min_ship_bbox_height=8,
+        min_ship_area=150,
+    )
+    assert result.ok is False
+    assert result.reason == "ship_implausible"
+    assert result.scene is not None
+    assert result.scene.ship_reject_reason == "min_bbox_height"
+    assert actions.calls == []
+
+
 def test_resolve_starfield_viewport_converts_normalized_bounds():
     assert resolve_starfield_viewport((400, 300), (0.1, 0.2, 0.9, 0.8)) == (40, 60, 360, 240)
 

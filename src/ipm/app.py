@@ -222,7 +222,7 @@ class Application:
             return (reason, panel)
 
         def _return_to_starfield() -> bool:
-            if not self.actions.open_planet_menu():
+            if not self.actions.close_planet_panel():
                 return False
             panel = planet_task.reader.read()
             return not planet_task._panel_readable(panel)

@@ -81,6 +81,13 @@ class ActionDriver:
     def open_planet_menu(self) -> bool:
         return self.send_key(self.config.actions.open_planet_menu_key, delay=self.config.actions.menu_delay_seconds)
 
+    def close_planet_panel(self) -> bool:
+        if self.click_rect_center("PLANET_PANEL_CLOSE", delay=self.config.actions.menu_delay_seconds):
+            return True
+        ok = self.send_key(self.config.actions.open_resources_key, delay=self.config.actions.menu_delay_seconds)
+        ok = self.send_key(self.config.actions.open_resources_key, delay=self.config.actions.menu_delay_seconds) and ok
+        return ok
+
     def open_ores_panel(self) -> bool:
         ok = self.send_key(self.config.actions.open_resources_key, delay=self.config.actions.menu_delay_seconds)
         ok = self.send_key(self.config.actions.ores_tab_key, delay=self.config.actions.menu_delay_seconds) and ok

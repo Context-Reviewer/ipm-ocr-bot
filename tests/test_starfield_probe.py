@@ -75,6 +75,23 @@ def test_starfield_probe_fails_closed_when_ship_missing():
     assert result.reason == "ship_missing"
 
 
+def test_starfield_probe_fails_closed_when_not_starfield_ready():
+    actions = FakeActions()
+    open_panel = PlanetPanelState(planet_id=2, title="DRAŠTA", mining_level=2, mining_cost=233)
+    result = try_open_nearest_starfield_candidate(
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((200, 120, 12),))),
+        actions=actions,
+        reader=FakeReader(open_panel),
+        panel_is_readable=_panel_is_readable,
+        starfield_ready_check=lambda: ("not_starfield_ready", open_panel),
+        settle_seconds=0.0,
+    )
+    assert result.ok is False
+    assert result.reason == "not_starfield_ready"
+    assert result.panel == open_panel
+    assert actions.calls == []
+
+
 def test_starfield_probe_fails_closed_when_no_candidates():
     result = try_open_nearest_starfield_candidate(
         capture=FakeCapture(_scene_image(ship_center=(160, 120))),
@@ -225,3 +242,18 @@ def test_planets_task_probe_confirmation_accepts_partial_upgrade_data_with_plaus
         )
         is True
     )
+
+
+def test_planets_task_probe_precondition_rejects_open_planet_panel():
+    assert (
+        PlanetsTask._probe_precondition_failure_reason(
+            PlanetPanelState(
+                planet_id=2,
+                title="DRAŠTA",
+                mining_level=2,
+                mining_cost=233,
+            )
+        )
+        == "not_starfield_ready"
+    )
+    assert PlanetsTask._probe_precondition_failure_reason(PlanetPanelState(title="Ship Speed", mining_cost=100)) is None

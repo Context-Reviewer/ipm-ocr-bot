@@ -151,11 +151,20 @@ class Application:
         if planet_task is None or getattr(planet_task, "reader", None) is None:
             print("[STARFIELD_PROBE] result=probe_unavailable")
             return 1
+
+        def _starfield_ready_check():
+            panel = planet_task.reader.read()
+            reason = planet_task._probe_precondition_failure_reason(panel)
+            if reason is None:
+                return None
+            return (reason, panel)
+
         probe = try_open_nearest_starfield_candidate(
             capture=self.capture_backend,
             actions=self.actions,
             reader=planet_task.reader,
             panel_is_readable=planet_task._panel_readable,
+            starfield_ready_check=_starfield_ready_check,
             panel_is_confirmed=planet_task._probe_panel_confirmed,
             settle_seconds=float(getattr(self.config.starfield, "click_probe_settle_seconds", 0.35)),
             save_annotation=bool(getattr(self.config.starfield, "save_probe_annotation", False)),

@@ -86,6 +86,7 @@ def try_open_nearest_starfield_candidate(
     actions: object,
     reader: object,
     panel_is_readable,
+    starfield_ready_check=None,
     panel_is_confirmed=None,
     settle_seconds: float,
     save_annotation: bool = False,
@@ -100,6 +101,15 @@ def try_open_nearest_starfield_candidate(
     max_ship_bbox_height: int = 90,
     max_ship_area_ratio: float = 0.08,
 ) -> StarfieldProbeResult:
+    if callable(starfield_ready_check):
+        precheck = starfield_ready_check()
+        if precheck:
+            if isinstance(precheck, tuple):
+                reason, panel = precheck
+            else:
+                reason, panel = str(precheck), None
+            print(f"[PLANET_NAV] open_failed reason={reason}")
+            return StarfieldProbeResult(ok=False, reason=str(reason), panel=panel)
     capture_screen = getattr(capture, "capture_screen", None)
     if not callable(capture_screen):
         print("[PLANET_NAV] open_failed reason=capture_unavailable")

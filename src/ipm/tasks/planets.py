@@ -86,6 +86,26 @@ class PlanetsTask:
         )
         return cost_count >= 2 or (cost_count >= 1 and level_count >= 1)
 
+    @staticmethod
+    def _probe_precondition_failure_reason(panel) -> str | None:
+        if panel is None:
+            return None
+        if not normalize_planet_name(getattr(panel, "title", "")):
+            return None
+        if getattr(panel, "planet_id", None) is not None:
+            return "not_starfield_ready"
+        for attr in (
+            "mining_level",
+            "speed_level",
+            "cargo_level",
+            "mining_cost",
+            "speed_cost",
+            "cargo_cost",
+        ):
+            if getattr(panel, attr, None) is not None:
+                return "not_starfield_ready"
+        return None
+
     def run(self) -> TaskResult:
         if self.reader is None or self.state_reader is None or self.actions is None or self.config is None:
             return TaskResult(

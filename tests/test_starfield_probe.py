@@ -1,6 +1,11 @@
 from PIL import Image
 
-from ipm.starfield_probe import StarfieldProbeResult, try_open_nearest_starfield_candidate
+from ipm.starfield_probe import (
+    StarfieldProbeResult,
+    resolve_starfield_exclusion_zones,
+    resolve_starfield_viewport,
+    try_open_nearest_starfield_candidate,
+)
 from ipm.state import PlanetPanelState
 from ipm.tasks import PlanetsTask
 from ipm.config import RuntimeConfig
@@ -109,6 +114,44 @@ def test_starfield_probe_failed_confirmation_is_not_success():
     assert result.reason == "panel_not_visible"
 
 
+def test_starfield_probe_requires_stricter_confirmation_when_provided():
+    result = try_open_nearest_starfield_candidate(
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((200, 120, 12),))),
+        actions=FakeActions(),
+        reader=FakeReader(PlanetPanelState(title="Ship Speed", mining_cost=300, speed_cost=400)),
+        panel_is_readable=_panel_is_readable,
+        panel_is_confirmed=lambda panel: bool(panel and panel.title == "1. BALOR"),
+        settle_seconds=0.0,
+    )
+    assert result.ok is False
+    assert result.reason == "panel_not_confirmed"
+
+
+def test_starfield_probe_fails_closed_when_ship_is_implausible():
+    result = try_open_nearest_starfield_candidate(
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), ship_size=(220, 80), objects=((260, 120, 14),))),
+        actions=FakeActions(),
+        reader=FakeReader(PlanetPanelState(planet_id=1, title="1. BALOR")),
+        panel_is_readable=_panel_is_readable,
+        settle_seconds=0.0,
+        max_ship_radius=72,
+        max_ship_bbox_width=140,
+        max_ship_bbox_height=90,
+        max_ship_area_ratio=0.08,
+    )
+    assert result.ok is False
+    assert result.reason == "ship_implausible"
+
+
+def test_resolve_starfield_viewport_converts_normalized_bounds():
+    assert resolve_starfield_viewport((400, 300), (0.1, 0.2, 0.9, 0.8)) == (40, 60, 360, 240)
+
+
+def test_resolve_starfield_exclusion_zones_converts_bounds_inside_viewport():
+    viewport = (40, 60, 360, 240)
+    assert resolve_starfield_exclusion_zones((400, 300), viewport, ((0.9, 0.0, 1.0, 1.0),)) == ((288, 0, 320, 180),)
+
+
 def test_planets_task_debug_flag_disabled_keeps_existing_path():
     class Actions:
         def __init__(self):
@@ -148,14 +191,22 @@ def test_planets_task_debug_flag_disabled_keeps_existing_path():
     planets_task_module.PlanetNavigator = Navigator
     try:
         actions = Actions()
+        runtime_config = RuntimeConfig()
+        runtime_config.starfield.enable_click_probe = False
         result = PlanetsTask(
             reader=Reader(),
             state_reader=StateReader(),
             actions=actions,
             capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((200, 120, 12),))),
-            config=RuntimeConfig(),
+            config=runtime_config,
         ).run()
     finally:
         planets_task_module.PlanetNavigator = original
     assert ("open_planet_menu",) in actions.calls
     assert result.ok is True
+
+
+def test_planets_task_probe_confirmation_requires_plausible_title_and_costs():
+    assert PlanetsTask._probe_panel_confirmed(PlanetPanelState(title="1. BALOR", mining_cost=100, speed_cost=200)) is True
+    assert PlanetsTask._probe_panel_confirmed(PlanetPanelState(title="", mining_cost=100, speed_cost=200)) is False
+    assert PlanetsTask._probe_panel_confirmed(PlanetPanelState(title="Ship Speed", mining_cost=100, speed_cost=200)) is False

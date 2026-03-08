@@ -99,10 +99,24 @@ class ActionConfig:
 
 @dataclass(slots=True)
 class StarfieldConfig:
-    enable_click_probe: bool = False
+    enable_click_probe: bool = True
     click_probe_settle_seconds: float = 0.35
-    save_probe_annotation: bool = False
+    save_probe_annotation: bool = True
     probe_annotation_dir: str = "out/starfield"
+    scene_viewport: tuple[float, float, float, float] = (0.08, 0.12, 0.88, 0.94)
+    scene_exclusion_zones: tuple[tuple[float, float, float, float], ...] = (
+        (0.0, 0.0, 1.0, 0.08),
+        (0.90, 0.0, 1.0, 1.0),
+        (0.0, 0.88, 1.0, 1.0),
+        (0.0, 0.0, 0.12, 0.18),
+    )
+    ship_exclusion_margin: int = 14
+    candidate_min_radius: int = 6
+    candidate_min_area: int = 80
+    max_ship_radius: int = 72
+    max_ship_bbox_width: int = 140
+    max_ship_bbox_height: int = 90
+    max_ship_area_ratio: float = 0.08
 
 
 @dataclass(slots=True)

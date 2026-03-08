@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 
 from ..decisions import choose_planet_upgrade
+from ..domain_data import normalize_planet_name
 from ..galaxy import PlanetNavigator
 from ..starfield_probe import try_open_nearest_starfield_candidate
 from .base import TaskResult
@@ -67,6 +68,24 @@ class PlanetsTask:
                 return True
         return False
 
+    @staticmethod
+    def _probe_panel_confirmed(panel) -> bool:
+        if panel is None:
+            return False
+        if not normalize_planet_name(getattr(panel, "title", "")):
+            return False
+        cost_count = sum(
+            1
+            for attr in ("mining_cost", "speed_cost", "cargo_cost")
+            if getattr(panel, attr, None) is not None
+        )
+        level_count = sum(
+            1
+            for attr in ("mining_level", "speed_level", "cargo_level")
+            if getattr(panel, attr, None) is not None
+        )
+        return cost_count >= 2 or (cost_count >= 1 and level_count >= 1)
+
     def run(self) -> TaskResult:
         if self.reader is None or self.state_reader is None or self.actions is None or self.config is None:
             return TaskResult(
@@ -85,9 +104,19 @@ class PlanetsTask:
                 actions=self.actions,
                 reader=self.reader,
                 panel_is_readable=self._panel_readable,
+                panel_is_confirmed=self._probe_panel_confirmed,
                 settle_seconds=float(getattr(self.config.starfield, "click_probe_settle_seconds", 0.35)),
                 save_annotation=bool(getattr(self.config.starfield, "save_probe_annotation", False)),
                 annotation_dir=str(getattr(self.config.starfield, "probe_annotation_dir", "out/starfield")),
+                scene_viewport=getattr(self.config.starfield, "scene_viewport", None),
+                scene_exclusion_zones=getattr(self.config.starfield, "scene_exclusion_zones", None),
+                ship_exclusion_margin=int(getattr(self.config.starfield, "ship_exclusion_margin", 14)),
+                candidate_min_radius=int(getattr(self.config.starfield, "candidate_min_radius", 6)),
+                candidate_min_area=int(getattr(self.config.starfield, "candidate_min_area", 80)),
+                max_ship_radius=int(getattr(self.config.starfield, "max_ship_radius", 72)),
+                max_ship_bbox_width=int(getattr(self.config.starfield, "max_ship_bbox_width", 140)),
+                max_ship_bbox_height=int(getattr(self.config.starfield, "max_ship_bbox_height", 90)),
+                max_ship_area_ratio=float(getattr(self.config.starfield, "max_ship_area_ratio", 0.08)),
             )
             if not probe.ok:
                 self.actions.reset_ui()

@@ -15,6 +15,7 @@ from .readers import HudReader, OrePanelReader, PlanetPanelReader, SellDialogRea
 from .rects import RectStore
 from .runtime import RuntimeState
 from .scheduler import ScheduledTask, Scheduler
+from .starfield_probe import try_open_nearest_starfield_candidate
 from .state_reader import GameStateReader
 from .tasks import OresTask, PlanetsTask
 
@@ -138,6 +139,34 @@ class Application:
                 time.sleep(self.config.scheduler.module_idle_seconds)
         except KeyboardInterrupt:
             pass
+
+    def run_starfield_probe_once(self) -> int:
+        if not bool(getattr(self.config.starfield, "enable_click_probe", False)):
+            print("[STARFIELD_PROBE] result=probe_disabled")
+            return 1
+        if not ensure_focus(self.config.focus):
+            print("[STARFIELD_PROBE] result=focus_unavailable")
+            return 1
+        planet_task = self.tasks.get("planets")
+        if planet_task is None or getattr(planet_task, "reader", None) is None:
+            print("[STARFIELD_PROBE] result=probe_unavailable")
+            return 1
+        probe = try_open_nearest_starfield_candidate(
+            capture=self.capture_backend,
+            actions=self.actions,
+            reader=planet_task.reader,
+            panel_is_readable=planet_task._panel_readable,
+            settle_seconds=float(getattr(self.config.starfield, "click_probe_settle_seconds", 0.35)),
+            save_annotation=bool(getattr(self.config.starfield, "save_probe_annotation", False)),
+            annotation_dir=str(getattr(self.config.starfield, "probe_annotation_dir", "out/starfield")),
+        )
+        target = (
+            f" target=({probe.target_point[0]},{probe.target_point[1]})"
+            if probe.target_point is not None
+            else ""
+        )
+        print(f"[STARFIELD_PROBE] result={probe.reason}{target}")
+        return 0 if probe.ok else 1
 
 
 def build_application() -> Application:

@@ -4,10 +4,11 @@ from dataclasses import dataclass
 
 from .. import perception as perception_backend
 from ..config import RuntimeConfig
+from ..domain_data import normalize_resource_row_name
 from ..rects import RectStore
 from ..state import OreRowState
 from .common import parse_alpha_label, parse_compact_number
-from .panel_text import normalize_ore_name, parse_ore_panel_text
+from .panel_text import parse_ore_panel_text
 
 
 @dataclass(slots=True)
@@ -30,6 +31,25 @@ class OrePanelReader:
         result = self.perception.read_text(image, prompt=prompt, mode=mode)
         return result.value.strip(), result.backend
 
+    def _sanitize_ore_name(self, value: str | None) -> str:
+        normalized = normalize_resource_row_name(value)
+        if normalized:
+            return normalized
+        token = parse_alpha_label(value)
+        normalized = normalize_resource_row_name(token)
+        if normalized:
+            return normalized
+        if str(value or "").strip():
+            print(f"[PERCEPTION] ore_panel semantic_reject reason=invalid_ore_name value={value!r}")
+        return ""
+
+    def _sanitize_quantity(self, value: int | None, *, raw_value: str | None) -> int | None:
+        if value is not None:
+            return value
+        if str(raw_value or "").strip():
+            print(f"[PERCEPTION] ore_panel semantic_reject reason=invalid_quantity value={raw_value!r}")
+        return None
+
     def _usable_panel_rows(self, rows: dict[int, OreRowState]) -> bool:
         populated = sum(1 for row in rows.values() if row.ore_name and row.quantity is not None)
         required = 1 if self.config.visible_ore_rows <= 1 else 2
@@ -44,8 +64,8 @@ class OrePanelReader:
         rows: dict[int, OreRowState] = {}
         for row_index, parsed in enumerate(parsed_rows, start=1):
             rows[row_index] = OreRowState(
-                ore_name=parsed.ore_name,
-                quantity=parsed.quantity,
+                ore_name=self._sanitize_ore_name(parsed.ore_name),
+                quantity=self._sanitize_quantity(parsed.quantity, raw_value=str(parsed.quantity or "")),
                 selected=False,
                 backend=backend,
             )
@@ -57,11 +77,10 @@ class OrePanelReader:
             return {}
         rows: dict[int, OreRowState] = {}
         for row_index, entry in enumerate(structured.ores[: self.config.visible_ore_rows], start=1):
-            ore_name = normalize_ore_name(entry.name) or entry.name.strip()
             quantity = parse_compact_number(entry.quantity)
             rows[row_index] = OreRowState(
-                ore_name=ore_name,
-                quantity=quantity,
+                ore_name=self._sanitize_ore_name(entry.name),
+                quantity=self._sanitize_quantity(quantity, raw_value=entry.quantity),
                 selected=False,
                 backend=structured.backend,
             )
@@ -122,7 +141,7 @@ class OrePanelReader:
                 prompt=self.config.perception.prompt_ore_quantity,
                 mode="ore_qty",
             )
-            ore_name = parse_alpha_label(row_text)
+            ore_name = self._sanitize_ore_name(row_text)
             row_quantity = parse_compact_number(row_text)
             qty_quantity = parse_compact_number(qty_text)
             quantity = qty_quantity
@@ -134,6 +153,7 @@ class OrePanelReader:
                     smaller = max(1, min(quantity, row_quantity))
                     if (larger / smaller) > 3.0:
                         quantity = row_quantity
+            quantity = self._sanitize_quantity(quantity, raw_value=qty_text or row_text)
             existing = rows.get(row_index)
             if existing is not None and existing.ore_name and existing.quantity is not None:
                 continue

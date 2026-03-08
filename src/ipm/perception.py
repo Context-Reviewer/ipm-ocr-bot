@@ -14,7 +14,13 @@ import numpy as np
 import pytesseract
 from PIL import Image
 
-from .domain_data import ORE_NAMES, is_plausible_planet_title, normalize_ore_name
+from .domain_data import (
+    ORE_NAMES,
+    RESOURCE_ROW_NAMES,
+    is_plausible_planet_title,
+    normalize_resource_row_name,
+    resource_row_name_reject_reason,
+)
 
 try:
     from openai import OpenAI
@@ -242,14 +248,21 @@ def _validate_planet_panel_payload(payload: object) -> PlanetPanelJSON:
 def _semantic_validate_ore_panel_payload(
     payload: OrePanelJSON,
     *,
-    known_ore_names: tuple[str, ...],
+    known_resource_names: tuple[str, ...],
 ) -> OrePanelJSON:
-    known_lookup = {normalize_ore_name(name) for name in known_ore_names if normalize_ore_name(name)}
+    known_lookup = {
+        normalize_resource_row_name(name)
+        for name in known_resource_names
+        if normalize_resource_row_name(name)
+    }
     if not payload.ores:
         raise ValueError("invalid_ore_name:no_rows")
     normalized_rows: list[OrePanelRowJSON] = []
     for row in payload.ores:
-        normalized_name = normalize_ore_name(row.name)
+        reject_reason = resource_row_name_reject_reason(row.name)
+        if reject_reason is not None:
+            raise ValueError(f"invalid_ore_name:{reject_reason}:{row.name!r}")
+        normalized_name = normalize_resource_row_name(row.name)
         if not normalized_name or normalized_name not in known_lookup:
             raise ValueError(f"invalid_ore_name:{row.name!r}")
         if row.name.strip().lower() in {"the", "a", "an"}:
@@ -636,7 +649,14 @@ class OpenAIPerceptionBackend:
             "No sentence wrappers.\n"
             "No extra keys.\n"
             "Use null when unreadable.\n"
-            "Each ore name must be the ore name only.\n"
+            "Each row name must be only the visible resource label.\n"
+            "No sentences.\n"
+            "No quotes.\n"
+            "No units.\n"
+            "No percentages.\n"
+            "Do not include quantities, prices, level text, speed text, ship text, or explanations.\n"
+            "Do not output labels like Ship Speed, Mining Rate, Level, version text, or UI headers.\n"
+            "If a row is not a valid resource row, omit it instead of guessing.\n"
             "Each quantity must be the raw visible numeric string only.\n"
             "Each price must be the raw visible numeric string only or null.\n"
             "Schema:\n"
@@ -655,7 +675,7 @@ class OpenAIPerceptionBackend:
             shape_validator=_validate_ore_panel_payload,
             semantic_validator=lambda payload: _semantic_validate_ore_panel_payload(
                 payload,
-                known_ore_names=self.known_ore_names,
+                known_resource_names=RESOURCE_ROW_NAMES,
             ),
         )
 

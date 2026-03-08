@@ -7,6 +7,7 @@ from ipm.perception import (
     OrePanelRowJSON,
     PlanetPanelJSON,
     PlanetPanelUpgradesJSON,
+    StructuredPerceptionError,
 )
 from ipm.readers.common import parse_alpha_label, parse_compact_number
 from ipm.readers import OrePanelReader, PlanetPanelReader, SellDialogReader
@@ -60,6 +61,33 @@ class FakeBackend:
         if self.planet_json is None:
             raise AssertionError("unexpected planet panel structured call")
         return self.planet_json
+
+
+class SequentialNumericBackend(FakeBackend):
+    def __init__(self, *, name, numeric_values, title_value="", panel_text=""):
+        super().__init__(name=name)
+        self.numeric_values = list(numeric_values)
+        self.title_value = title_value
+        self.panel_text = panel_text
+
+    def read_text(self, _image, *, prompt="", mode="generic"):
+        if mode == "planet_panel":
+            value = self.panel_text
+        elif mode == "planet_title":
+            value = self.title_value
+        elif mode == "numeric":
+            value = self.numeric_values.pop(0) if self.numeric_values else ""
+        else:
+            value = ""
+
+        class Result:
+            confidence = 1.0
+
+            def __init__(self, value, backend):
+                self.value = value
+                self.backend = backend
+
+        return Result(value, self.name)
 
 
 def _openai_fallback(backend):
@@ -197,6 +225,36 @@ def test_ore_panel_reader_uses_openai_json_without_plain_text_panel_parse():
     assert rows[1].backend == "openai"
 
 
+def test_ore_panel_reader_preserves_expanded_resource_row_name():
+    cfg = RuntimeConfig(visible_ore_rows=1)
+    rects = RectStore(
+        path=None,
+        rects={
+            "ORES_PANEL_TEXT": (0, 0, 1, 1),
+        },
+    )
+    perception = HybridPerceptionBackend(
+        primary=FakeBackend(name="windows", mapping={(cfg.perception.prompt_ore_panel, "ore_panel"): ""}),
+        fallback=_openai_fallback(
+            FakeBackend(
+                name="openai",
+                ore_json=OrePanelJSON(
+                    panel_type="ore_panel",
+                    planet_name="8. ACHEAON",
+                    ores=(
+                        OrePanelRowJSON(name="Sulfur", quantity="2.26K", price="$1"),
+                    ),
+                ),
+                fail_panel_text=True,
+            )
+        ),
+    )
+    rows = OrePanelReader(cfg, rects, FakeCapture(), perception).read_visible_rows()
+    assert rows[1].ore_name == "Sulfur"
+    assert rows[1].quantity == 2_260
+    assert rows[1].backend == "openai"
+
+
 def test_planet_panel_reader_uses_openai_json_without_plain_text_panel_parse():
     cfg = RuntimeConfig()
     rects = RectStore(
@@ -232,6 +290,71 @@ def test_planet_panel_reader_uses_openai_json_without_plain_text_panel_parse():
     assert state.speed_cost == 32_110
     assert state.cargo_cost == 31_620
     assert state.title_backend == "openai"
+
+
+def test_ore_panel_reader_falls_through_to_legacy_after_openai_semantic_failure():
+    cfg = RuntimeConfig(visible_ore_rows=1)
+    rects = RectStore(
+        path=None,
+        rects={
+            "ORES_PANEL_TEXT": (0, 0, 1, 1),
+        },
+    )
+
+    class RejectingOpenAI(FakeBackend):
+        def read_ore_panel_json(self, _image):
+            raise StructuredPerceptionError(
+                backend="openai",
+                panel_type="ore_panel",
+                reason="invalid_ore_name:'The'",
+            )
+
+    perception = HybridPerceptionBackend(
+        primary=FakeBackend(name="windows", mapping={(cfg.perception.prompt_ore_panel, "ore_panel"): ""}),
+        fallback=HybridPerceptionBackend(
+            primary=RejectingOpenAI(name="openai", fail_panel_text=True),
+            fallback=FakeBackend(
+                name="legacy",
+                mapping={
+                    (cfg.perception.prompt_ore_panel, "ore_panel"): "\n".join(["Copper", "2.26K", "$1"]),
+                },
+            ),
+        ),
+    )
+    rows = OrePanelReader(cfg, rects, FakeCapture(), perception).read_visible_rows()
+    assert rows[1].ore_name == "Copper"
+    assert rows[1].quantity == 2_260
+    assert rows[1].backend == "legacy"
+
+
+def test_planet_panel_reader_rejects_implausible_field_numbers():
+    cfg = RuntimeConfig()
+    rects = RectStore(
+        path=None,
+        rects={
+            "PLANET_TITLE": (0, 0, 1, 1),
+            "MINING_LVL": (0, 0, 1, 1),
+            "SHIP_LVL": (0, 0, 1, 1),
+            "CARGO_LVL": (0, 0, 1, 1),
+            "UPGRADE_MINING": (0, 0, 1, 1),
+            "UPGRADE_SPEED": (0, 0, 1, 1),
+            "UPGRADE_CARGO": (0, 0, 1, 1),
+        },
+    )
+    perception = SequentialNumericBackend(
+        name="windows",
+        title_value="8. ACHEAON",
+        numeric_values=["7470", "14", "0", "47", "32.11K", "31.62K"],
+    )
+    state = PlanetPanelReader(cfg, rects, FakeCapture(), perception).read()
+    assert state.planet_id == 8
+    assert state.title == "8. ACHEAON"
+    assert state.mining_level is None
+    assert state.speed_level == 14
+    assert state.cargo_level is None
+    assert state.mining_cost is None
+    assert state.speed_cost == 32_110
+    assert state.cargo_cost == 31_620
 
 
 def test_sell_dialog_reader_reads_selected_quantity():

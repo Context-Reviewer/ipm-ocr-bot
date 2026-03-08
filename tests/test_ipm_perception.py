@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 from PIL import Image
@@ -42,6 +43,15 @@ def test_read_ore_panel_json_normalizes_alias_to_canonical_ore_name():
     )
     result = backend.read_ore_panel_json(_image())
     assert result.ores[0].name == "Silica"
+
+
+def test_read_ore_panel_json_accepts_evidence_backed_resource_row_name():
+    backend = OpenAIPerceptionBackend(enabled=True)
+    backend._client = FakeClient(
+        '{"panel_type":"ore_panel","planet_name":"8. ACHEAON","ores":[{"name":"Sulfur","quantity":"2.26K","price":"$1"}]}'
+    )
+    result = backend.read_ore_panel_json(_image())
+    assert result.ores[0].name == "Sulfur"
 
 
 def test_read_planet_panel_json_preserves_valid_structured_read():
@@ -95,6 +105,34 @@ def test_read_ore_panel_json_rejects_junk_ore_name():
     with pytest.raises(StructuredPerceptionError) as exc:
         backend.read_ore_panel_json(_image())
     assert "invalid_ore_name" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    ("raw_name", "expected_reason"),
+    [
+        ('The ore or resource name visible in the row is "Sulfur."', "prose_wrapper"),
+        ('The resource name visible in the row is "Iron".', "prose_wrapper"),
+        ("Ship Speed", "ui_text"),
+        ("8.92 mkph", "digit_text"),
+        ("v. 24", "digit_text"),
+        ("100%", "digit_text"),
+        ("Cooper 390", "digit_text"),
+    ],
+)
+def test_read_ore_panel_json_rejects_live_resource_name_failures(raw_name: str, expected_reason: str):
+    backend = OpenAIPerceptionBackend(enabled=True)
+    backend._client = FakeClient(
+        json.dumps(
+            {
+                "panel_type": "ore_panel",
+                "planet_name": "8. ACHEAON",
+                "ores": [{"name": raw_name, "quantity": "2.26K", "price": "$1"}],
+            }
+        )
+    )
+    with pytest.raises(StructuredPerceptionError) as exc:
+        backend.read_ore_panel_json(_image())
+    assert expected_reason in str(exc.value)
 
 
 def test_read_ore_panel_json_rejects_empty_ore_name():

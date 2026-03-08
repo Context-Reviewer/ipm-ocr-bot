@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import re
 import unicodedata
 
-from ..domain_data import normalize_ore_name
+from ..domain_data import normalize_resource_row_name
 from .common import parse_compact_number, parse_int
 
 
@@ -62,13 +62,17 @@ def parse_ore_panel_text(
     if not lines:
         return []
 
-    known_lookup = {normalize_ore_name(name): normalize_ore_name(name) for name in known_names if normalize_ore_name(name)}
+    known_lookup = {
+        normalize_resource_row_name(name): normalize_resource_row_name(name)
+        for name in known_names
+        if normalize_resource_row_name(name)
+    }
     names: list[str] = []
     quantities: list[int] = []
     seen_names: set[str] = set()
 
     for line in lines:
-        name = normalize_ore_name(line)
+        name = normalize_resource_row_name(line)
         if name:
             canonical = known_lookup.get(name, name)
             if canonical not in seen_names:

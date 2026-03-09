@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import ctypes
 import time
+from dataclasses import dataclass
 
 from .config import FocusConfig
-from window_win32 import activate_window_by_title_substring
+from window_win32 import ActivationResult, activate_window_by_title_substring_result
 
 
 def get_active_window_title() -> str:
@@ -39,11 +40,65 @@ def is_focus_ok(cfg: FocusConfig) -> bool:
     return title_matches_focus_target(get_active_window_title(), cfg)
 
 
-def ensure_focus(cfg: FocusConfig) -> bool:
-    if is_focus_ok(cfg):
-        return True
+@dataclass(frozen=True)
+class FocusResult:
+    ok: bool
+    reason: str
+    active_title_before: str
+    active_title_after: str
+    activation_status: str = ""
+    activation_error: str = ""
+    target_title: str = ""
+
+
+def ensure_focus_result(cfg: FocusConfig) -> FocusResult:
+    active_title_before = get_active_window_title()
+    if not cfg.required:
+        return FocusResult(
+            ok=True,
+            reason="focus_not_required",
+            active_title_before=active_title_before,
+            active_title_after=active_title_before,
+        )
+    if title_matches_focus_target(active_title_before, cfg):
+        return FocusResult(
+            ok=True,
+            reason="already_focused",
+            active_title_before=active_title_before,
+            active_title_after=active_title_before,
+        )
     if not cfg.auto_activate:
-        return False
-    if activate_window_by_title_substring(cfg.window_substring):
+        return FocusResult(
+            ok=False,
+            reason="auto_activate_disabled",
+            active_title_before=active_title_before,
+            active_title_after=active_title_before,
+        )
+
+    activation = activate_window_by_title_substring_result(cfg.window_substring)
+    if activation.ok:
         time.sleep(cfg.activate_retry_delay)
-    return is_focus_ok(cfg)
+    active_title_after = get_active_window_title()
+    if title_matches_focus_target(active_title_after, cfg):
+        return FocusResult(
+            ok=True,
+            reason="focused_after_activation",
+            active_title_before=active_title_before,
+            active_title_after=active_title_after,
+            activation_status=activation.status,
+            activation_error=activation.error_message,
+            target_title=activation.target_title,
+        )
+    return FocusResult(
+        ok=False,
+        reason=activation.status or "focus_mismatch",
+        active_title_before=active_title_before,
+        active_title_after=active_title_after,
+        activation_status=activation.status,
+        activation_error=activation.error_message,
+        target_title=activation.target_title,
+    )
+
+
+def ensure_focus(cfg: FocusConfig) -> bool:
+    return ensure_focus_result(cfg).ok

@@ -18,6 +18,17 @@ class ClientRect:
     height: int
 
 
+@dataclass(frozen=True)
+class ActivationResult:
+    ok: bool
+    status: str
+    hwnd: int | None
+    active_title_before: str
+    active_title_after: str
+    target_title: str = ""
+    error_message: str = ""
+
+
 _RECT_CACHE: dict[str, tuple[float, ClientRect]] = {}
 
 
@@ -45,25 +56,100 @@ def find_window_by_title_substring(sub: str) -> Optional[int]:
     return None
 
 
-def activate_window(hwnd: int) -> bool:
+def _get_window_title(hwnd: int) -> str:
     if not hwnd:
-        return False
+        return ""
+    try:
+        return win32gui.GetWindowText(hwnd) or ""
+    except Exception:
+        return ""
+
+
+def get_foreground_window_title() -> str:
+    try:
+        hwnd = win32gui.GetForegroundWindow()
+    except Exception:
+        return ""
+    return _get_window_title(hwnd)
+
+
+def activate_window_result(hwnd: int) -> ActivationResult:
+    active_title_before = get_foreground_window_title()
+    target_title = _get_window_title(hwnd)
+    if not hwnd:
+        return ActivationResult(
+            ok=False,
+            status="window_not_found",
+            hwnd=None,
+            active_title_before=active_title_before,
+            active_title_after=active_title_before,
+        )
     try:
         if win32gui.IsIconic(hwnd):
             win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
         else:
             win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+        try:
+            win32gui.BringWindowToTop(hwnd)
+        except Exception:
+            pass
         win32gui.SetForegroundWindow(hwnd)
-        return True
+    except Exception as exc:
+        return ActivationResult(
+            ok=False,
+            status="setforeground_failed",
+            hwnd=hwnd,
+            active_title_before=active_title_before,
+            active_title_after=get_foreground_window_title(),
+            target_title=target_title,
+            error_message=str(exc),
+        )
+
+    active_title_after = get_foreground_window_title()
+    active_hwnd = None
+    try:
+        active_hwnd = win32gui.GetForegroundWindow()
     except Exception:
-        return False
+        active_hwnd = None
+    if active_hwnd == hwnd:
+        return ActivationResult(
+            ok=True,
+            status="activated",
+            hwnd=hwnd,
+            active_title_before=active_title_before,
+            active_title_after=active_title_after,
+            target_title=target_title,
+        )
+    return ActivationResult(
+        ok=False,
+        status="foreground_mismatch",
+        hwnd=hwnd,
+        active_title_before=active_title_before,
+        active_title_after=active_title_after,
+        target_title=target_title,
+    )
+
+
+def activate_window(hwnd: int) -> bool:
+    return activate_window_result(hwnd).ok
 
 
 def activate_window_by_title_substring(sub: str) -> bool:
+    return activate_window_by_title_substring_result(sub).ok
+
+
+def activate_window_by_title_substring_result(sub: str) -> ActivationResult:
     hwnd = find_window_by_title_substring(sub)
     if not hwnd:
-        return False
-    return activate_window(hwnd)
+        active_title = get_foreground_window_title()
+        return ActivationResult(
+            ok=False,
+            status="window_not_found",
+            hwnd=None,
+            active_title_before=active_title,
+            active_title_after=active_title,
+        )
+    return activate_window_result(hwnd)
 
 
 def _title_matches(hwnd: int, sub: str) -> bool:

@@ -282,24 +282,57 @@ class Application:
         return image.crop((left, top, right, bottom))
 
     @staticmethod
+    def _normalized_crop_image(
+        image: Image.Image,
+        region: tuple[float, float, float, float],
+    ) -> Image.Image | None:
+        left, top, right, bottom = region
+        crop = image.crop(
+            (
+                max(0, int(round(image.width * float(left)))),
+                max(0, int(round(image.height * float(top)))),
+                min(image.width, int(round(image.width * float(right)))),
+                min(image.height, int(round(image.height * float(bottom)))),
+            )
+        )
+        if crop.width < 2 or crop.height < 2:
+            return None
+        return crop
+
+    @staticmethod
+    def _crop_signal_stats(image: Image.Image | None, *, bright_threshold: int = 150) -> dict[str, float] | None:
+        if image is None:
+            return None
+        gray = image.convert("L")
+        stat = ImageStat.Stat(gray)
+        extrema = stat.extrema[0]
+        histogram = gray.histogram()
+        total = float(sum(int(count) for count in histogram))
+        if total <= 0.0:
+            return None
+        return {
+            "mean": float(stat.mean[0]),
+            "dynamic_range": float(int(extrema[1]) - int(extrema[0])),
+            "bright_fraction": sum(float(histogram[index]) for index in range(int(bright_threshold), 256)) / total,
+            "dark_fraction": sum(float(histogram[index]) for index in range(0, 81)) / total,
+        }
+
+    @classmethod
     def _crop_has_panel_signal(
+        cls,
         image: Image.Image | None,
         *,
         min_dynamic_range: int,
         min_bright_fraction: float,
         bright_threshold: int = 150,
     ) -> bool:
-        if image is None:
+        stats = cls._crop_signal_stats(image, bright_threshold=bright_threshold)
+        if stats is None:
             return False
-        gray = image.convert("L")
-        stat = ImageStat.Stat(gray)
-        extrema = stat.extrema[0]
-        dynamic_range = int(extrema[1]) - int(extrema[0])
-        pixels = list(gray.getdata())
-        if not pixels:
-            return False
-        bright_fraction = sum(1 for value in pixels if int(value) >= bright_threshold) / float(len(pixels))
-        return dynamic_range >= int(min_dynamic_range) and bright_fraction >= float(min_bright_fraction)
+        return (
+            stats["dynamic_range"] >= int(min_dynamic_range)
+            and stats["bright_fraction"] >= float(min_bright_fraction)
+        )
 
     def _planet_panel_likely_visible(self, image: Image.Image) -> bool:
         close_crop = self._crop_rect_image(image, "PLANET_PANEL_CLOSE")
@@ -317,12 +350,28 @@ class Application:
         )
         return close_signal and title_signal
 
+    def _central_overlay_likely_visible(self, image: Image.Image) -> bool:
+        panel_crop = self._crop_rect_image(image, "PLANET_PANEL_TEXT")
+        if panel_crop is None:
+            panel_crop = self._normalized_crop_image(image, (0.08, 0.14, 0.88, 0.86))
+        stats = self._crop_signal_stats(panel_crop, bright_threshold=150)
+        if stats is None:
+            return False
+        return stats["mean"] <= 45.0 and stats["dark_fraction"] >= 0.90
+
     def _evaluate_ui_state(self, image: Image.Image) -> UIStateCheck:
         if self._planet_panel_likely_visible(image):
             return UIStateCheck(
                 state="planet_panel_present",
                 detail="panel_controls_visible",
                 panel_visible=True,
+                starfield_ready=False,
+            )
+        if self._central_overlay_likely_visible(image):
+            return UIStateCheck(
+                state="overlay_present",
+                detail="central_modal_overlay",
+                panel_visible=False,
                 starfield_ready=False,
             )
         return UIStateCheck(

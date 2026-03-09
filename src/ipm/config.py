@@ -103,6 +103,12 @@ class StarfieldConfig:
     click_probe_settle_seconds: float = 0.35
     save_probe_annotation: bool = True
     probe_annotation_dir: str = "out/starfield"
+    ship_template_enabled: bool = True
+    ship_template_path: str = "src/assets/ship_template.png"
+    ship_template_threshold: float = 0.55
+    ship_template_scales: tuple[float, ...] = (1.0, 0.75, 0.5, 0.35, 0.25, 0.18, 0.12, 0.08)
+    ship_template_use_edges: bool = True
+    ship_template_allow_fallback: bool = True
     scene_viewport: tuple[float, float, float, float] = (0.08, 0.12, 0.88, 0.94)
     scene_exclusion_zones: tuple[tuple[float, float, float, float], ...] = (
         (0.0, 0.0, 1.0, 0.08),

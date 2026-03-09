@@ -6,6 +6,8 @@ from math import hypot, inf
 import numpy as np
 from PIL import Image, ImageDraw
 
+from .ship_template import ShipTemplateDetection, detect_ship_template
+
 
 @dataclass(slots=True, frozen=True)
 class StarfieldObject:
@@ -25,6 +27,10 @@ class StarfieldScene:
     ship_area: int | None
     ship_reject_reason: str | None
     objects: tuple[StarfieldObject, ...]
+    ship_detection_mode: str | None = None
+    ship_template_status: str | None = None
+    ship_match_score: float | None = None
+    ship_match_scale: float | None = None
     viewport: tuple[int, int, int, int] | None = None
     exclusion_zones: tuple[tuple[int, int, int, int], ...] = ()
 
@@ -184,6 +190,19 @@ def _detect_ship(components: list[_Component], *, image_size: tuple[int, int]) -
     return max(candidates, key=lambda component: _ship_score(component, image_size=image_size))
 
 
+def _component_from_template_detection(detection: ShipTemplateDetection) -> _Component | None:
+    match = detection.match
+    if match is None:
+        return None
+    return _Component(
+        center_x=int(match.center_x),
+        center_y=int(match.center_y),
+        area=max(1, int(match.area)),
+        width=max(1, int(match.width)),
+        height=max(1, int(match.height)),
+    )
+
+
 def _ship_reject_reason(
     ship: _Component | None,
     *,
@@ -294,6 +313,13 @@ def detect_starfield_scene(
     *,
     viewport: tuple[int, int, int, int] | None = None,
     exclusion_zones: tuple[tuple[int, int, int, int], ...] | None = None,
+    ship_template_enabled: bool = False,
+    ship_template_path: str | None = None,
+    ship_template_scales: tuple[float, ...] = (1.0, 0.75, 0.5, 0.35, 0.25, 0.18, 0.12, 0.08),
+    ship_template_threshold: float = 0.55,
+    ship_template_use_edges: bool = True,
+    ship_template_allow_fallback: bool = True,
+    ship_template_image: Image.Image | None = None,
     candidate_min_area: int = 80,
     candidate_min_radius: int = 6,
     ship_exclusion_margin: int = 14,
@@ -316,7 +342,25 @@ def detect_starfield_scene(
         working_image = image
     normalized_exclusion_zones = _normalize_exclusion_zones(exclusion_zones, image_size=working_image.size)
     components = _connected_components(_apply_exclusion_zones(_bright_mask(working_image), normalized_exclusion_zones))
-    detected_ship = _detect_ship(components, image_size=working_image.size)
+    template_detection: ShipTemplateDetection | None = None
+    detected_ship: _Component | None = None
+    ship_detection_mode: str | None = None
+    if ship_template_enabled:
+        template_detection = detect_ship_template(
+            working_image,
+            template_path=ship_template_path,
+            template_image=ship_template_image,
+            scales=ship_template_scales,
+            threshold=ship_template_threshold,
+            use_edges=ship_template_use_edges,
+        )
+        detected_ship = _component_from_template_detection(template_detection)
+        if detected_ship is not None:
+            ship_detection_mode = "template"
+    if detected_ship is None and (not ship_template_enabled or ship_template_allow_fallback):
+        detected_ship = _detect_ship(components, image_size=working_image.size)
+        if detected_ship is not None:
+            ship_detection_mode = "heuristic"
     ship_reject_reason = _ship_reject_reason(
         detected_ship,
         image_size=working_image.size,
@@ -374,6 +418,10 @@ def detect_starfield_scene(
         ship_area=ship_area,
         ship_reject_reason=ship_reject_reason,
         objects=scene_objects,
+        ship_detection_mode=ship_detection_mode,
+        ship_template_status=template_detection.status if template_detection is not None else None,
+        ship_match_score=template_detection.best_score if template_detection is not None else None,
+        ship_match_scale=template_detection.best_scale if template_detection is not None else None,
         viewport=normalized_viewport,
         exclusion_zones=tuple(
             (zone_left + left, zone_top + top, zone_right + left, zone_bottom + top)
@@ -423,6 +471,28 @@ def format_starfield_scene_debug(scene: StarfieldScene) -> str:
     )
     exclusions = f" exclusions={len(scene.exclusion_zones)}" if scene.exclusion_zones else ""
     return f"[STARFIELD] {ship}{viewport}{exclusions} candidates={len(scene.objects)} ranked=[{candidates}]"
+
+
+def format_ship_detection_debug(scene: StarfieldScene) -> str | None:
+    status = scene.ship_template_status
+    if status is None:
+        return None
+    if status == "match" and scene.ship_center_x is not None and scene.ship_center_y is not None:
+        score = f"{scene.ship_match_score:.2f}" if scene.ship_match_score is not None else "?"
+        scale = f"{scene.ship_match_scale:.2f}" if scene.ship_match_scale is not None else "?"
+        suffix = "" if scene.ship_detection_mode == "template" else " fallback=heuristic"
+        return f"[SHIP_DETECT] match={score} scale={scale} center=({scene.ship_center_x},{scene.ship_center_y}){suffix}"
+    if status == "below_threshold":
+        score = f"{scene.ship_match_score:.2f}" if scene.ship_match_score is not None else "?"
+        suffix = " fallback=heuristic" if scene.ship_detection_mode == "heuristic" else ""
+        return f"[SHIP_DETECT] result=below_threshold score={score}{suffix}"
+    if status == "not_found":
+        suffix = " fallback=heuristic" if scene.ship_detection_mode == "heuristic" else ""
+        return f"[SHIP_DETECT] result=not_found{suffix}"
+    if status == "template_missing":
+        suffix = " fallback=heuristic" if scene.ship_detection_mode == "heuristic" else ""
+        return f"[SHIP_DETECT] result=template_missing{suffix}"
+    return f"[SHIP_DETECT] result={status}"
 
 
 def annotate_starfield_scene(image: Image.Image, scene: StarfieldScene) -> Image.Image:

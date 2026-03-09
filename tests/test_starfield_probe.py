@@ -99,6 +99,24 @@ def test_starfield_probe_fails_closed_when_ship_missing():
     assert result.reason == "ship_missing"
 
 
+def test_starfield_probe_fails_closed_when_template_detection_misses_without_fallback():
+    actions = FakeActions()
+    result = try_open_nearest_starfield_candidate(
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((200, 120, 12),))),
+        actions=actions,
+        reader=FakeReader(PlanetPanelState(planet_id=1, title="1. BALOR")),
+        panel_is_readable=_panel_is_readable,
+        settle_seconds=0.0,
+        ship_template_enabled=True,
+        ship_template_image=Image.new("RGBA", (24, 24), (0, 0, 0, 0)),
+        ship_template_threshold=0.95,
+        ship_template_allow_fallback=False,
+    )
+    assert result.ok is False
+    assert result.reason == "ship_missing"
+    assert actions.calls == []
+
+
 def test_starfield_probe_fails_closed_when_not_starfield_ready():
     actions = FakeActions()
     open_panel = PlanetPanelState(planet_id=2, title="DRAŠTA", mining_level=2, mining_cost=233)

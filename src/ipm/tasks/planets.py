@@ -130,6 +130,12 @@ class PlanetsTask:
                 annotation_dir=str(getattr(self.config.starfield, "probe_annotation_dir", "out/starfield")),
                 scene_viewport=getattr(self.config.starfield, "scene_viewport", None),
                 scene_exclusion_zones=getattr(self.config.starfield, "scene_exclusion_zones", None),
+                ship_template_enabled=bool(getattr(self.config.starfield, "ship_template_enabled", True)),
+                ship_template_path=str(getattr(self.config.starfield, "ship_template_path", "src/assets/ship_template.png")),
+                ship_template_scales=tuple(getattr(self.config.starfield, "ship_template_scales", (1.0, 0.75, 0.5, 0.35, 0.25, 0.18, 0.12, 0.08))),
+                ship_template_threshold=float(getattr(self.config.starfield, "ship_template_threshold", 0.55)),
+                ship_template_use_edges=bool(getattr(self.config.starfield, "ship_template_use_edges", True)),
+                ship_template_allow_fallback=bool(getattr(self.config.starfield, "ship_template_allow_fallback", True)),
                 ship_exclusion_margin=int(getattr(self.config.starfield, "ship_exclusion_margin", 14)),
                 ship_cluster_exclusion_x_margin=int(
                     getattr(self.config.starfield, "ship_cluster_exclusion_x_margin", 60)

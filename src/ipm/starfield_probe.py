@@ -10,6 +10,7 @@ from .starfield_scene import (
     StarfieldScene,
     annotate_starfield_scene,
     detect_starfield_scene,
+    format_ship_detection_debug,
     format_starfield_scene_debug,
     get_ranked_planet_candidates,
 )
@@ -116,6 +117,13 @@ def try_open_starfield_candidate_by_rank(
     annotation_dir: str = "out/starfield",
     scene_viewport: tuple[float, float, float, float] | None = None,
     scene_exclusion_zones: tuple[tuple[float, float, float, float], ...] | None = None,
+    ship_template_enabled: bool = False,
+    ship_template_path: str | None = None,
+    ship_template_scales: tuple[float, ...] = (1.0, 0.75, 0.5, 0.35, 0.25, 0.18, 0.12, 0.08),
+    ship_template_threshold: float = 0.55,
+    ship_template_use_edges: bool = True,
+    ship_template_allow_fallback: bool = True,
+    ship_template_image: Image.Image | None = None,
     ship_exclusion_margin: int = 14,
     ship_cluster_exclusion_x_margin: int = 0,
     ship_cluster_exclusion_y_margin: int = 0,
@@ -152,6 +160,13 @@ def try_open_starfield_candidate_by_rank(
         image,
         viewport=resolved_viewport,
         exclusion_zones=resolve_starfield_exclusion_zones(image.size, resolved_viewport, scene_exclusion_zones),
+        ship_template_enabled=ship_template_enabled,
+        ship_template_path=ship_template_path,
+        ship_template_scales=ship_template_scales,
+        ship_template_threshold=ship_template_threshold,
+        ship_template_use_edges=ship_template_use_edges,
+        ship_template_allow_fallback=ship_template_allow_fallback,
+        ship_template_image=ship_template_image,
         ship_exclusion_margin=ship_exclusion_margin,
         ship_cluster_exclusion_x_margin=ship_cluster_exclusion_x_margin,
         ship_cluster_exclusion_y_margin=ship_cluster_exclusion_y_margin,
@@ -165,6 +180,9 @@ def try_open_starfield_candidate_by_rank(
         max_ship_bbox_height=max_ship_bbox_height,
         max_ship_area_ratio=max_ship_area_ratio,
     )
+    ship_debug = format_ship_detection_debug(scene)
+    if ship_debug:
+        print(ship_debug)
     print(format_starfield_scene_debug(scene))
     if scene.ship_reject_reason is not None:
         print(f"[PLANET_NAV] open_failed reason=ship_implausible detail={scene.ship_reject_reason}")

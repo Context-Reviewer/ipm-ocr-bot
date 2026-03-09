@@ -1,25 +1,64 @@
 from PIL import Image, ImageDraw
 
+from ipm.ship_template import detect_ship_template
 from ipm.starfield_scene import (
     StarfieldObject,
     StarfieldScene,
     detect_starfield_scene,
+    format_ship_detection_debug,
     format_starfield_scene_debug,
     get_ranked_planet_candidates,
     select_nearest_candidate,
 )
 
 
-def _scene_image(*, ship_center=None, ship_size=(36, 18), objects=()):
+def _draw_ship(draw, *, cx, cy, size, fill=(245, 245, 245), glow=None):
+    ship_w, ship_h = size
+    body_w = max(10, int(round(ship_w * 0.46)))
+    body_h = max(8, int(round(ship_h * 0.62)))
+    pod_w = max(6, int(round(ship_w * 0.18)))
+    pod_h = max(8, int(round(ship_h * 0.56)))
+    draw.ellipse(
+        (cx - body_w // 2, cy - body_h // 2, cx + body_w // 2, cy + body_h // 2),
+        fill=fill,
+    )
+    draw.rectangle(
+        (cx - ship_w // 2, cy - pod_h // 2, cx - ship_w // 2 + pod_w, cy + pod_h // 2),
+        fill=fill,
+    )
+    draw.rectangle(
+        (cx + ship_w // 2 - pod_w, cy - pod_h // 2, cx + ship_w // 2, cy + pod_h // 2),
+        fill=fill,
+    )
+    draw.polygon(
+        (
+            (cx, cy + ship_h // 2),
+            (cx - max(4, ship_w // 8), cy + max(4, ship_h // 7)),
+            (cx + max(3, ship_w // 10), cy + max(1, ship_h // 10)),
+        ),
+        fill=fill,
+    )
+    if glow is not None:
+        draw.ellipse(
+            (cx - body_w // 2 - 2, cy - body_h // 2 - 2, cx + body_w // 2 + 2, cy + body_h // 2 + 2),
+            outline=glow,
+            width=2,
+        )
+
+
+def _scene_image(*, ship_center=None, ship_size=(36, 18), ship_style="ellipse", objects=()):
     image = Image.new("RGB", (320, 240), (4, 8, 16))
     draw = ImageDraw.Draw(image)
     if ship_center is not None:
         cx, cy = ship_center
-        ship_w, ship_h = ship_size
-        draw.ellipse(
-            (cx - ship_w // 2, cy - ship_h // 2, cx + ship_w // 2, cy + ship_h // 2),
-            fill=(245, 245, 245),
-        )
+        if ship_style == "sprite":
+            _draw_ship(draw, cx=cx, cy=cy, size=ship_size)
+        else:
+            ship_w, ship_h = ship_size
+            draw.ellipse(
+                (cx - ship_w // 2, cy - ship_h // 2, cx + ship_w // 2, cy + ship_h // 2),
+                fill=(245, 245, 245),
+            )
     for cx, cy, radius in objects:
         draw.ellipse(
             (cx - radius, cy - radius, cx + radius, cy + radius),
@@ -28,19 +67,104 @@ def _scene_image(*, ship_center=None, ship_size=(36, 18), objects=()):
     return image
 
 
+def _ship_template_image(size=(36, 18)):
+    image = Image.new("RGBA", size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    _draw_ship(
+        draw,
+        cx=size[0] // 2,
+        cy=size[1] // 2,
+        size=size,
+        fill=(245, 245, 245, 255),
+        glow=(180, 255, 255, 255),
+    )
+    return image
+
+
+def test_detect_ship_template_finds_synthetic_ship():
+    scene = _scene_image(ship_center=(160, 120), ship_size=(44, 16), ship_style="sprite")
+    detection = detect_ship_template(
+        scene,
+        template_image=_ship_template_image((44, 16)),
+        scales=(1.0,),
+        threshold=0.5,
+        use_edges=True,
+    )
+    assert detection.status == "match"
+    assert detection.match is not None
+    assert abs(detection.match.center_x - 160) <= 3
+    assert abs(detection.match.center_y - 120) <= 3
+    assert detection.best_scale in {1.0, 0.75, 0.5, 0.35}
+
+
+def test_detect_ship_template_supports_multi_scale_matching():
+    scene = _scene_image(ship_center=(160, 120), ship_size=(22, 8), ship_style="sprite")
+    detection = detect_ship_template(
+        scene,
+        template_image=_ship_template_image((44, 16)),
+        scales=(1.0, 0.5),
+        threshold=0.5,
+        use_edges=True,
+    )
+    assert detection.status == "match"
+    assert detection.match is not None
+    assert detection.best_scale in {0.5, 0.35, 0.25}
+
+
+def test_detect_ship_template_fails_cleanly_below_threshold():
+    scene = _scene_image()
+    detection = detect_ship_template(
+        scene,
+        template_image=_ship_template_image((44, 16)),
+        scales=(1.0,),
+        threshold=0.80,
+        use_edges=True,
+    )
+    assert detection.status in {"below_threshold", "not_found"}
+    assert detection.match is None
+
+
+def test_detect_starfield_scene_can_fallback_to_heuristic_when_template_misses():
+    scene = detect_starfield_scene(
+        _scene_image(ship_center=(160, 120), ship_size=(44, 16), ship_style="sprite", objects=((220, 120, 12),)),
+        ship_template_enabled=True,
+        ship_template_image=Image.new("RGBA", (24, 24), (0, 0, 0, 0)),
+        ship_template_scales=(1.0,),
+        ship_template_threshold=0.95,
+        ship_template_use_edges=True,
+        ship_template_allow_fallback=True,
+    )
+    assert scene.ship_center_x is not None
+    assert scene.ship_detection_mode == "heuristic"
+    assert scene.ship_template_status in {"below_threshold", "not_found"}
+
+
 def test_detect_starfield_scene_finds_ship_and_ranks_objects_nearest_first():
     image = _scene_image(
         ship_center=(160, 120),
         ship_size=(44, 16),
-        objects=((200, 120, 12), (250, 120, 14), (160, 200, 10)),
+        ship_style="sprite",
     )
-    scene = detect_starfield_scene(image)
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle((190, 110, 210, 130), radius=5, fill=(220, 240, 255))
+    draw.rounded_rectangle((238, 108, 262, 132), radius=6, fill=(220, 240, 255))
+    draw.rounded_rectangle((150, 190, 170, 210), radius=5, fill=(220, 240, 255))
+    scene = detect_starfield_scene(
+        image,
+        ship_template_enabled=True,
+        ship_template_image=_ship_template_image((44, 16)),
+        ship_template_scales=(1.0,),
+        ship_template_use_edges=False,
+        ship_template_allow_fallback=False,
+    )
     assert scene.ship_center_x is not None
     assert scene.ship_center_y is not None
     assert scene.ship_radius is not None
     assert scene.ship_bbox is not None
     assert scene.ship_area is not None
     assert scene.ship_reject_reason is None
+    assert scene.ship_detection_mode == "template"
+    assert scene.ship_template_status == "match"
     assert abs(scene.ship_center_x - 160) <= 3
     assert abs(scene.ship_center_y - 120) <= 3
     ranked = get_ranked_planet_candidates(scene)
@@ -53,15 +177,23 @@ def test_detect_starfield_scene_finds_ship_and_ranks_objects_nearest_first():
 
 
 def test_detect_starfield_scene_handles_missing_ship_cleanly():
-    image = _scene_image(objects=((120, 120, 12), (180, 120, 12)))
-    scene = detect_starfield_scene(image)
+    image = _scene_image()
+    scene = detect_starfield_scene(
+        image,
+        ship_template_enabled=True,
+        ship_template_image=_ship_template_image((44, 16)),
+        ship_template_scales=(1.0,),
+        ship_template_use_edges=True,
+        ship_template_allow_fallback=False,
+    )
     assert scene.ship_center_x is None
     assert scene.ship_center_y is None
     assert scene.ship_radius is None
     assert scene.ship_bbox is None
     assert scene.ship_area is None
     assert scene.ship_reject_reason is None
-    assert len(scene.objects) == 2
+    assert scene.ship_template_status in {"below_threshold", "not_found"}
+    assert len(scene.objects) == 0
     assert get_ranked_planet_candidates(scene) == []
     assert select_nearest_candidate(scene) is None
 
@@ -266,3 +398,21 @@ def test_format_starfield_scene_debug_includes_ship_reject_reason():
     )
     text = format_starfield_scene_debug(scene)
     assert "ship=(141,543) r=16 bbox=31x2 a=42 invalid=min_bbox_height" in text
+
+
+def test_format_ship_detection_debug_reports_template_match():
+    scene = StarfieldScene(
+        ship_center_x=160,
+        ship_center_y=120,
+        ship_radius=22,
+        ship_bbox=(138, 112, 182, 128),
+        ship_area=500,
+        ship_reject_reason=None,
+        objects=(),
+        ship_detection_mode="template",
+        ship_template_status="match",
+        ship_match_score=0.91,
+        ship_match_scale=0.5,
+    )
+    text = format_ship_detection_debug(scene)
+    assert text == "[SHIP_DETECT] match=0.91 scale=0.50 center=(160,120)"

@@ -106,6 +106,7 @@ def try_open_nearest_starfield_candidate(
 def try_open_starfield_candidate_by_rank(
     *,
     capture: object,
+    image: Image.Image | None = None,
     actions: object,
     reader: object,
     target_rank: int = 1,
@@ -128,6 +129,10 @@ def try_open_starfield_candidate_by_rank(
     ship_template_search_top_margin: int = 0,
     ship_template_search_right_margin: int = 0,
     ship_template_search_bottom_margin: int = 0,
+    ship_template_min_scale: float = 0.0,
+    ship_template_min_width: int = 0,
+    ship_template_min_height: int = 0,
+    ship_template_min_area: int = 0,
     ship_exclusion_margin: int = 14,
     ship_cluster_exclusion_x_margin: int = 0,
     ship_cluster_exclusion_y_margin: int = 0,
@@ -151,19 +156,21 @@ def try_open_starfield_candidate_by_rank(
             print(f"[PLANET_NAV] open_failed reason={reason}")
             return StarfieldProbeResult(ok=False, reason=str(reason), rank=max(1, int(target_rank)), panel=panel)
     target_rank = max(1, int(target_rank))
-    capture_screen = getattr(capture, "capture_screen", None)
-    if not callable(capture_screen):
-        print("[PLANET_NAV] open_failed reason=capture_unavailable")
-        return StarfieldProbeResult(ok=False, reason="capture_unavailable", rank=target_rank)
-    image = capture_screen()
-    if image is None:
-        print("[PLANET_NAV] open_failed reason=capture_unavailable")
-        return StarfieldProbeResult(ok=False, reason="capture_unavailable", rank=target_rank)
-    resolved_viewport = resolve_starfield_viewport(image.size, scene_viewport)
+    working_image = image
+    if working_image is None:
+        capture_screen = getattr(capture, "capture_screen", None)
+        if not callable(capture_screen):
+            print("[PLANET_NAV] open_failed reason=capture_unavailable")
+            return StarfieldProbeResult(ok=False, reason="capture_unavailable", rank=target_rank)
+        working_image = capture_screen()
+        if working_image is None:
+            print("[PLANET_NAV] open_failed reason=capture_unavailable")
+            return StarfieldProbeResult(ok=False, reason="capture_unavailable", rank=target_rank)
+    resolved_viewport = resolve_starfield_viewport(working_image.size, scene_viewport)
     scene = detect_starfield_scene(
-        image,
+        working_image,
         viewport=resolved_viewport,
-        exclusion_zones=resolve_starfield_exclusion_zones(image.size, resolved_viewport, scene_exclusion_zones),
+        exclusion_zones=resolve_starfield_exclusion_zones(working_image.size, resolved_viewport, scene_exclusion_zones),
         ship_template_enabled=ship_template_enabled,
         ship_template_path=ship_template_path,
         ship_template_scales=ship_template_scales,
@@ -175,6 +182,10 @@ def try_open_starfield_candidate_by_rank(
         ship_template_search_top_margin=ship_template_search_top_margin,
         ship_template_search_right_margin=ship_template_search_right_margin,
         ship_template_search_bottom_margin=ship_template_search_bottom_margin,
+        ship_template_min_scale=ship_template_min_scale,
+        ship_template_min_width=ship_template_min_width,
+        ship_template_min_height=ship_template_min_height,
+        ship_template_min_area=ship_template_min_area,
         ship_exclusion_margin=ship_exclusion_margin,
         ship_cluster_exclusion_x_margin=ship_cluster_exclusion_x_margin,
         ship_cluster_exclusion_y_margin=ship_cluster_exclusion_y_margin,
@@ -207,7 +218,7 @@ def try_open_starfield_candidate_by_rank(
         return StarfieldProbeResult(ok=False, reason="candidate_rank_unavailable", scene=scene, rank=target_rank)
     target = ranked[target_rank - 1]
     if save_annotation:
-        saved_path = maybe_save_starfield_annotation(image, scene, output_dir=annotation_dir)
+        saved_path = maybe_save_starfield_annotation(working_image, scene, output_dir=annotation_dir)
         if saved_path:
             print(f"[STARFIELD] saved_annotation={saved_path}")
     target_point = (target.center_x, target.center_y)

@@ -3,8 +3,11 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
 
 import keyboard
+from PIL import Image
 
 from .actions import ActionDriver
 from .capture import create_capture_backend
@@ -21,6 +24,19 @@ from .starfield_probe import (
 )
 from .state_reader import GameStateReader
 from .tasks import OresTask, PlanetsTask
+
+
+def prepare_run_artifact_dir(*, base_dir: str = "out/runs", now: datetime | None = None) -> Path:
+    timestamp = (now or datetime.now()).strftime("%Y%m%d_%H%M%S")
+    path = Path(base_dir) / timestamp
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def save_run_frame(image: Image.Image, *, output_dir: Path, filename: str = "frame.png") -> str:
+    target = output_dir / filename
+    image.save(target)
+    return str(target)
 
 
 @dataclass(slots=True)
@@ -184,6 +200,10 @@ class Application:
             ship_template_search_top_margin=int(getattr(self.config.starfield, "ship_template_search_top_margin", 0)),
             ship_template_search_right_margin=int(getattr(self.config.starfield, "ship_template_search_right_margin", 0)),
             ship_template_search_bottom_margin=int(getattr(self.config.starfield, "ship_template_search_bottom_margin", 0)),
+            ship_template_min_scale=float(getattr(self.config.starfield, "ship_template_min_scale", 0.0)),
+            ship_template_min_width=int(getattr(self.config.starfield, "ship_template_min_width", 0)),
+            ship_template_min_height=int(getattr(self.config.starfield, "ship_template_min_height", 0)),
+            ship_template_min_area=int(getattr(self.config.starfield, "ship_template_min_area", 0)),
             ship_exclusion_margin=int(getattr(self.config.starfield, "ship_exclusion_margin", 14)),
             ship_cluster_exclusion_x_margin=int(
                 getattr(self.config.starfield, "ship_cluster_exclusion_x_margin", 60)
@@ -223,6 +243,17 @@ class Application:
         if planet_task is None or getattr(planet_task, "reader", None) is None:
             print("[PLANET_DISCOVERY] result=probe_unavailable")
             return 1
+        capture_screen = getattr(self.capture_backend, "capture_screen", None)
+        if not callable(capture_screen):
+            print("[PLANET_DISCOVERY] result=capture_unavailable")
+            return 1
+        frame = capture_screen()
+        if frame is None:
+            print("[PLANET_DISCOVERY] result=capture_unavailable")
+            return 1
+        run_dir = prepare_run_artifact_dir()
+        frame_path = save_run_frame(frame, output_dir=run_dir)
+        print(f"[PLANET_DISCOVERY] frame={frame_path}")
 
         def _starfield_ready_check():
             panel = planet_task.reader.read()
@@ -239,6 +270,7 @@ class Application:
 
         discovery = discover_starfield_planet_by_rank(
             capture=self.capture_backend,
+            image=frame,
             actions=self.actions,
             reader=planet_task.reader,
             target_rank=target_rank,
@@ -248,7 +280,7 @@ class Application:
             return_to_starfield=_return_to_starfield,
             settle_seconds=float(getattr(self.config.starfield, "click_probe_settle_seconds", 0.35)),
             save_annotation=bool(getattr(self.config.starfield, "save_probe_annotation", False)),
-            annotation_dir=str(getattr(self.config.starfield, "probe_annotation_dir", "out/starfield")),
+            annotation_dir=str(run_dir),
             scene_viewport=getattr(self.config.starfield, "scene_viewport", None),
             scene_exclusion_zones=getattr(self.config.starfield, "scene_exclusion_zones", None),
             ship_template_enabled=bool(getattr(self.config.starfield, "ship_template_enabled", True)),
@@ -261,6 +293,10 @@ class Application:
             ship_template_search_top_margin=int(getattr(self.config.starfield, "ship_template_search_top_margin", 0)),
             ship_template_search_right_margin=int(getattr(self.config.starfield, "ship_template_search_right_margin", 0)),
             ship_template_search_bottom_margin=int(getattr(self.config.starfield, "ship_template_search_bottom_margin", 0)),
+            ship_template_min_scale=float(getattr(self.config.starfield, "ship_template_min_scale", 0.0)),
+            ship_template_min_width=int(getattr(self.config.starfield, "ship_template_min_width", 0)),
+            ship_template_min_height=int(getattr(self.config.starfield, "ship_template_min_height", 0)),
+            ship_template_min_area=int(getattr(self.config.starfield, "ship_template_min_area", 0)),
             ship_exclusion_margin=int(getattr(self.config.starfield, "ship_exclusion_margin", 14)),
             ship_cluster_exclusion_x_margin=int(
                 getattr(self.config.starfield, "ship_cluster_exclusion_x_margin", 60)

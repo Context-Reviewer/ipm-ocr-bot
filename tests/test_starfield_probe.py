@@ -99,6 +99,24 @@ def test_starfield_probe_fails_closed_when_ship_missing():
     assert result.reason == "ship_missing"
 
 
+def test_starfield_probe_uses_provided_image_without_recapturing():
+    class BrokenCapture:
+        def capture_screen(self):
+            raise AssertionError("capture_screen should not be called when image is provided")
+
+    result = try_open_nearest_starfield_candidate(
+        capture=BrokenCapture(),
+        image=_scene_image(ship_center=(160, 120), objects=((200, 120, 12),)),
+        actions=FakeActions(),
+        reader=FakeReader(PlanetPanelState(planet_id=1, title="1. BALOR")),
+        panel_is_readable=_panel_is_readable,
+        settle_seconds=0.0,
+    )
+    assert result.ok is True
+    assert result.reason == "open_confirmed"
+    assert result.target_point == (200, 120)
+
+
 def test_starfield_probe_fails_closed_when_template_detection_misses_without_fallback():
     actions = FakeActions()
     result = try_open_nearest_starfield_candidate(

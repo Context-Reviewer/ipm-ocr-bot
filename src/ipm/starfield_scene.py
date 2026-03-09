@@ -31,8 +31,11 @@ class StarfieldScene:
     ship_template_status: str | None = None
     ship_match_score: float | None = None
     ship_match_scale: float | None = None
+    ship_template_reject_reason: str | None = None
+    ship_template_raw_bbox: tuple[int, int, int, int] | None = None
     viewport: tuple[int, int, int, int] | None = None
     exclusion_zones: tuple[tuple[int, int, int, int], ...] = ()
+    rejected_candidate_debug: tuple[str, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)
@@ -291,6 +294,15 @@ def _component_is_ship_cluster_proximal(
     return _component_inside_expanded_bbox(component, ship, x_margin=x_margin, y_margin=y_margin)
 
 
+def _component_ship_distance(
+    component: _Component,
+    ship: _Component | None,
+) -> float | None:
+    if ship is None:
+        return None
+    return hypot(component.center_x - ship.center_x, component.center_y - ship.center_y)
+
+
 def _detect_objects(
     components: list[_Component],
     *,
@@ -298,10 +310,13 @@ def _detect_objects(
     minimum_area: int,
     minimum_radius: int,
     ship_exclusion_margin: int,
+    ship_candidate_exclusion_radius: float,
     ship_cluster_exclusion_x_margin: int,
     ship_cluster_exclusion_y_margin: int,
-) -> list[_Component]:
+) -> tuple[list[_Component], tuple[str, ...]]:
     objects: list[_Component] = []
+    rejected_debug: list[str] = []
+    candidate_exclusion_radius = max(0.0, float(ship_candidate_exclusion_radius))
     for component in components:
         if ship is not None and component == ship:
             continue
@@ -315,6 +330,10 @@ def _detect_objects(
             continue
         if _component_is_ship_proximal(component, ship, margin=ship_exclusion_margin):
             continue
+        distance_from_ship = _component_ship_distance(component, ship)
+        if distance_from_ship is not None and distance_from_ship < candidate_exclusion_radius:
+            rejected_debug.append(f"[STARFIELD] reject reason=near_ship_cluster d={distance_from_ship:.1f}")
+            continue
         if _component_is_ship_cluster_proximal(
             component,
             ship,
@@ -323,7 +342,7 @@ def _detect_objects(
         ):
             continue
         objects.append(component)
-    return objects
+    return objects, tuple(rejected_debug)
 
 
 def detect_starfield_scene(
@@ -342,9 +361,14 @@ def detect_starfield_scene(
     ship_template_search_top_margin: int = 0,
     ship_template_search_right_margin: int = 0,
     ship_template_search_bottom_margin: int = 0,
+    ship_template_min_scale: float = 0.0,
+    ship_template_min_width: int = 0,
+    ship_template_min_height: int = 0,
+    ship_template_min_area: int = 0,
     candidate_min_area: int = 80,
     candidate_min_radius: int = 6,
     ship_exclusion_margin: int = 14,
+    ship_candidate_exclusion_radius: int = 0,
     ship_cluster_exclusion_x_margin: int = 0,
     ship_cluster_exclusion_y_margin: int = 0,
     min_ship_bbox_width: int = 20,
@@ -383,6 +407,10 @@ def detect_starfield_scene(
             scales=ship_template_scales,
             threshold=ship_template_threshold,
             use_edges=ship_template_use_edges,
+            min_scale=ship_template_min_scale,
+            min_width=ship_template_min_width,
+            min_height=ship_template_min_height,
+            min_area=ship_template_min_area,
         )
         detected_ship = _component_from_template_detection(template_detection)
         if detected_ship is not None:
@@ -403,12 +431,16 @@ def detect_starfield_scene(
         max_area_ratio=max(0.0, float(max_ship_area_ratio)),
     )
     ship = detected_ship if ship_reject_reason is None else None
-    objects = _detect_objects(
+    effective_ship_candidate_exclusion_radius = max(0.0, float(ship_candidate_exclusion_radius))
+    if ship is not None and effective_ship_candidate_exclusion_radius <= 0.0:
+        effective_ship_candidate_exclusion_radius = float(ship.width) * 2.5
+    objects, rejected_candidate_debug = _detect_objects(
         components,
         ship=ship,
         minimum_area=max(12, int(candidate_min_area)),
         minimum_radius=max(1, int(candidate_min_radius)),
         ship_exclusion_margin=max(0, int(ship_exclusion_margin)),
+        ship_candidate_exclusion_radius=effective_ship_candidate_exclusion_radius,
         ship_cluster_exclusion_x_margin=max(0, int(ship_cluster_exclusion_x_margin)),
         ship_cluster_exclusion_y_margin=max(0, int(ship_cluster_exclusion_y_margin)),
     )
@@ -452,11 +484,14 @@ def detect_starfield_scene(
         ship_template_status=template_detection.status if template_detection is not None else None,
         ship_match_score=template_detection.best_score if template_detection is not None else None,
         ship_match_scale=template_detection.best_scale if template_detection is not None else None,
+        ship_template_reject_reason=template_detection.reject_reason if template_detection is not None else None,
+        ship_template_raw_bbox=template_detection.raw_match.bbox if template_detection is not None and template_detection.raw_match is not None else None,
         viewport=normalized_viewport,
         exclusion_zones=tuple(
             (zone_left + left, zone_top + top, zone_right + left, zone_bottom + top)
             for zone_left, zone_top, zone_right, zone_bottom in normalized_exclusion_zones
         ),
+        rejected_candidate_debug=rejected_candidate_debug,
     )
 
 
@@ -507,15 +542,26 @@ def format_ship_detection_debug(scene: StarfieldScene) -> str | None:
     status = scene.ship_template_status
     if status is None:
         return None
+    bbox = (
+        f" bbox={scene.ship_template_raw_bbox[2] - scene.ship_template_raw_bbox[0]}x{scene.ship_template_raw_bbox[3] - scene.ship_template_raw_bbox[1]}"
+        if scene.ship_template_raw_bbox is not None
+        else ""
+    )
     if status == "match" and scene.ship_center_x is not None and scene.ship_center_y is not None:
         score = f"{scene.ship_match_score:.2f}" if scene.ship_match_score is not None else "?"
         scale = f"{scene.ship_match_scale:.2f}" if scene.ship_match_scale is not None else "?"
         suffix = "" if scene.ship_detection_mode == "template" else " fallback=heuristic"
-        return f"[SHIP_DETECT] match={score} scale={scale} center=({scene.ship_center_x},{scene.ship_center_y}){suffix}"
+        return f"[SHIP_DETECT] raw={score} scale={scale}{bbox} accepted center=({scene.ship_center_x},{scene.ship_center_y}){suffix}"
     if status == "below_threshold":
         score = f"{scene.ship_match_score:.2f}" if scene.ship_match_score is not None else "?"
         suffix = " fallback=heuristic" if scene.ship_detection_mode == "heuristic" else ""
         return f"[SHIP_DETECT] result=below_threshold score={score}{suffix}"
+    if status == "rejected":
+        score = f"{scene.ship_match_score:.2f}" if scene.ship_match_score is not None else "?"
+        scale = f"{scene.ship_match_scale:.2f}" if scene.ship_match_scale is not None else "?"
+        suffix = " fallback=heuristic" if scene.ship_detection_mode == "heuristic" else ""
+        reason = scene.ship_template_reject_reason or "rejected"
+        return f"[SHIP_DETECT] raw={score} scale={scale}{bbox} rejected={reason}{suffix}"
     if status == "not_found":
         suffix = " fallback=heuristic" if scene.ship_detection_mode == "heuristic" else ""
         return f"[SHIP_DETECT] result=not_found{suffix}"

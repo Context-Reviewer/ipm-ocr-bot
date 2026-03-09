@@ -140,7 +140,14 @@ class PlanetsTask:
                 ship_template_search_top_margin=int(getattr(self.config.starfield, "ship_template_search_top_margin", 0)),
                 ship_template_search_right_margin=int(getattr(self.config.starfield, "ship_template_search_right_margin", 0)),
                 ship_template_search_bottom_margin=int(getattr(self.config.starfield, "ship_template_search_bottom_margin", 0)),
+                ship_template_min_scale=float(getattr(self.config.starfield, "ship_template_min_scale", 0.0)),
+                ship_template_min_width=int(getattr(self.config.starfield, "ship_template_min_width", 0)),
+                ship_template_min_height=int(getattr(self.config.starfield, "ship_template_min_height", 0)),
+                ship_template_min_area=int(getattr(self.config.starfield, "ship_template_min_area", 0)),
                 ship_exclusion_margin=int(getattr(self.config.starfield, "ship_exclusion_margin", 14)),
+                ship_candidate_exclusion_radius=int(
+                    getattr(self.config.starfield, "ship_candidate_exclusion_radius", 0)
+                ),
                 ship_cluster_exclusion_x_margin=int(
                     getattr(self.config.starfield, "ship_cluster_exclusion_x_margin", 60)
                 ),
@@ -149,6 +156,15 @@ class PlanetsTask:
                 ),
                 candidate_min_radius=int(getattr(self.config.starfield, "candidate_min_radius", 6)),
                 candidate_min_area=int(getattr(self.config.starfield, "candidate_min_area", 80)),
+                small_candidate_fallback_max_radius=int(
+                    getattr(self.config.starfield, "small_candidate_fallback_max_radius", 20)
+                ),
+                small_candidate_fallback_offset_x=int(
+                    getattr(self.config.starfield, "small_candidate_fallback_offset_x", 10)
+                ),
+                small_candidate_fallback_offset_y=int(
+                    getattr(self.config.starfield, "small_candidate_fallback_offset_y", 0)
+                ),
                 min_ship_bbox_width=int(getattr(self.config.starfield, "min_ship_bbox_width", 20)),
                 min_ship_bbox_height=int(getattr(self.config.starfield, "min_ship_bbox_height", 8)),
                 min_ship_area=int(getattr(self.config.starfield, "min_ship_area", 150)),

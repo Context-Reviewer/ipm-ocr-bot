@@ -113,6 +113,10 @@ class StarfieldConfig:
     ship_template_search_top_margin: int = 12
     ship_template_search_right_margin: int = 112
     ship_template_search_bottom_margin: int = 16
+    ship_template_min_scale: float = 0.10
+    ship_template_min_width: int = 24
+    ship_template_min_height: int = 24
+    ship_template_min_area: int = 260
     scene_viewport: tuple[float, float, float, float] = (0.08, 0.12, 0.88, 0.94)
     scene_exclusion_zones: tuple[tuple[float, float, float, float], ...] = (
         (0.0, 0.0, 1.0, 0.08),
@@ -121,10 +125,14 @@ class StarfieldConfig:
         (0.0, 0.0, 0.12, 0.18),
     )
     ship_exclusion_margin: int = 14
+    ship_candidate_exclusion_radius: int = 0
     ship_cluster_exclusion_x_margin: int = 60
     ship_cluster_exclusion_y_margin: int = 110
     candidate_min_radius: int = 6
     candidate_min_area: int = 80
+    small_candidate_fallback_max_radius: int = 20
+    small_candidate_fallback_offset_x: int = 10
+    small_candidate_fallback_offset_y: int = 0
     min_ship_bbox_width: int = 20
     min_ship_bbox_height: int = 8
     min_ship_area: int = 150

@@ -138,6 +138,10 @@ def try_open_starfield_candidate_by_rank(
     ship_cluster_exclusion_y_margin: int = 0,
     candidate_min_radius: int = 6,
     candidate_min_area: int = 80,
+    ship_candidate_exclusion_radius: int = 0,
+    small_candidate_fallback_max_radius: int = 0,
+    small_candidate_fallback_offset_x: int = 0,
+    small_candidate_fallback_offset_y: int = 0,
     min_ship_bbox_width: int = 20,
     min_ship_bbox_height: int = 8,
     min_ship_area: int = 150,
@@ -146,6 +150,21 @@ def try_open_starfield_candidate_by_rank(
     max_ship_bbox_height: int = 90,
     max_ship_area_ratio: float = 0.08,
 ) -> StarfieldProbeResult:
+    def _attempt_confirmation(point: tuple[int, int], *, attempt_label: str) -> tuple[bool, str, object | None]:
+        print(
+            "[PLANET_NAV] "
+            f"click_policy attempt={attempt_label} point=({point[0]},{point[1]}) "
+            f"radius={target.radius}"
+        )
+        if not callable(click_point) or not click_point(point, delay=settle_seconds):
+            return False, "click_failed", None
+        panel = reader.read()
+        if not panel_is_readable(panel):
+            return False, "panel_not_visible", panel
+        if callable(panel_is_confirmed) and not panel_is_confirmed(panel):
+            return False, "panel_not_confirmed", panel
+        return True, "open_confirmed", panel
+
     if callable(starfield_ready_check):
         precheck = starfield_ready_check()
         if precheck:
@@ -187,6 +206,7 @@ def try_open_starfield_candidate_by_rank(
         ship_template_min_height=ship_template_min_height,
         ship_template_min_area=ship_template_min_area,
         ship_exclusion_margin=ship_exclusion_margin,
+        ship_candidate_exclusion_radius=ship_candidate_exclusion_radius,
         ship_cluster_exclusion_x_margin=ship_cluster_exclusion_x_margin,
         ship_cluster_exclusion_y_margin=ship_cluster_exclusion_y_margin,
         candidate_min_radius=candidate_min_radius,
@@ -203,6 +223,8 @@ def try_open_starfield_candidate_by_rank(
     if ship_debug:
         print(ship_debug)
     print(format_starfield_scene_debug(scene))
+    for rejected in scene.rejected_candidate_debug:
+        print(rejected)
     if scene.ship_reject_reason is not None:
         print(f"[PLANET_NAV] open_failed reason=ship_implausible detail={scene.ship_reject_reason}")
         return StarfieldProbeResult(ok=False, reason="ship_implausible", scene=scene, rank=target_rank)
@@ -222,9 +244,13 @@ def try_open_starfield_candidate_by_rank(
         if saved_path:
             print(f"[STARFIELD] saved_annotation={saved_path}")
     target_point = (target.center_x, target.center_y)
-    print(f"[PLANET_NAV] target=({target.center_x},{target.center_y}) rank={target_rank}")
+    print(
+        f"[PLANET_NAV] target=({target.center_x},{target.center_y}) "
+        f"rank={target_rank} radius={target.radius}"
+    )
     click_point = getattr(actions, "click_client_point", None)
-    if not callable(click_point) or not click_point(target_point, delay=settle_seconds):
+    ok, reason, panel = _attempt_confirmation(target_point, attempt_label="primary")
+    if not ok and reason == "click_failed":
         print("[PLANET_NAV] open_failed reason=click_failed")
         return StarfieldProbeResult(
             ok=False,
@@ -233,8 +259,48 @@ def try_open_starfield_candidate_by_rank(
             target_point=target_point,
             rank=target_rank,
         )
-    panel = reader.read()
-    if not panel_is_readable(panel):
+    if (
+        not ok
+        and reason in {"panel_not_visible", "panel_not_confirmed"}
+        and target.radius is not None
+        and target.radius <= max(0, int(small_candidate_fallback_max_radius))
+    ):
+        fallback_point = (
+            target.center_x + int(small_candidate_fallback_offset_x),
+            target.center_y + int(small_candidate_fallback_offset_y),
+        )
+        print(
+            "[PLANET_NAV] "
+            f"click_policy fallback_point=({fallback_point[0]},{fallback_point[1]}) "
+            f"after={reason}"
+        )
+        fallback_ok, fallback_reason, fallback_panel = _attempt_confirmation(
+            fallback_point,
+            attempt_label="fallback",
+        )
+        if fallback_ok:
+            print("[PLANET_NAV] open_confirmed via=fallback")
+            return StarfieldProbeResult(
+                ok=True,
+                reason="open_confirmed",
+                scene=scene,
+                target_point=fallback_point,
+                rank=target_rank,
+                panel=fallback_panel,
+            )
+        reason = fallback_reason
+        panel = fallback_panel
+    if not ok and reason == "click_failed":
+        print("[PLANET_NAV] open_failed reason=click_failed")
+        return StarfieldProbeResult(
+            ok=False,
+            reason="click_failed",
+            scene=scene,
+            target_point=target_point,
+            rank=target_rank,
+            panel=panel,
+        )
+    if not ok and reason == "panel_not_visible":
         print("[PLANET_NAV] open_failed reason=panel_not_visible")
         return StarfieldProbeResult(
             ok=False,
@@ -244,7 +310,7 @@ def try_open_starfield_candidate_by_rank(
             rank=target_rank,
             panel=panel,
         )
-    if callable(panel_is_confirmed) and not panel_is_confirmed(panel):
+    if not ok and reason == "panel_not_confirmed":
         print("[PLANET_NAV] open_failed reason=panel_not_confirmed")
         return StarfieldProbeResult(
             ok=False,
@@ -254,7 +320,7 @@ def try_open_starfield_candidate_by_rank(
             rank=target_rank,
             panel=panel,
         )
-    print("[PLANET_NAV] open_confirmed")
+    print("[PLANET_NAV] open_confirmed via=primary")
     return StarfieldProbeResult(
         ok=True,
         reason="open_confirmed",

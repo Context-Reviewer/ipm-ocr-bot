@@ -111,6 +111,39 @@ def test_detect_ship_template_supports_multi_scale_matching():
     assert detection.best_scale in {0.5, 0.35, 0.25}
 
 
+def test_detect_ship_template_rejects_tiny_match_by_min_scale():
+    scene = _scene_image(ship_center=(160, 120), ship_size=(22, 8), ship_style="sprite")
+    detection = detect_ship_template(
+        scene,
+        template_image=_ship_template_image((44, 16)),
+        scales=(0.5,),
+        threshold=0.5,
+        use_edges=True,
+        min_scale=0.6,
+    )
+    assert detection.status == "rejected"
+    assert detection.reject_reason == "min_scale"
+    assert detection.raw_match is not None
+    assert detection.match is None
+
+
+def test_detect_ship_template_rejects_tiny_match_by_min_bbox():
+    scene = _scene_image(ship_center=(160, 120), ship_size=(22, 8), ship_style="sprite")
+    detection = detect_ship_template(
+        scene,
+        template_image=_ship_template_image((44, 16)),
+        scales=(0.5,),
+        threshold=0.5,
+        use_edges=True,
+        min_width=24,
+        min_height=10,
+    )
+    assert detection.status == "rejected"
+    assert detection.reject_reason in {"min_width", "min_height"}
+    assert detection.raw_match is not None
+    assert detection.match is None
+
+
 def test_detect_ship_template_translates_coordinates_from_search_region():
     scene = _scene_image(ship_center=(160, 120), ship_size=(44, 16), ship_style="sprite")
     detection = detect_ship_template(
@@ -169,6 +202,40 @@ def test_detect_starfield_scene_can_fallback_to_heuristic_when_template_misses()
     assert scene.ship_template_status in {"below_threshold", "not_found"}
 
 
+def test_detect_starfield_scene_can_fallback_after_template_rejection():
+    scene = detect_starfield_scene(
+        _scene_image(ship_center=(160, 120), ship_size=(22, 8), ship_style="sprite", objects=((220, 120, 12),)),
+        ship_template_enabled=True,
+        ship_template_image=_ship_template_image((44, 16)),
+        ship_template_scales=(0.5,),
+        ship_template_threshold=0.5,
+        ship_template_use_edges=True,
+        ship_template_allow_fallback=True,
+        ship_template_min_scale=0.6,
+    )
+    assert scene.ship_center_x is not None
+    assert scene.ship_detection_mode == "heuristic"
+    assert scene.ship_template_status == "rejected"
+    assert scene.ship_template_reject_reason == "min_scale"
+
+
+def test_detect_starfield_scene_returns_no_anchor_when_template_rejects_and_fallback_fails():
+    scene = detect_starfield_scene(
+        _scene_image(ship_center=(160, 120), ship_size=(22, 8), ship_style="sprite"),
+        ship_template_enabled=True,
+        ship_template_image=_ship_template_image((44, 16)),
+        ship_template_scales=(0.5,),
+        ship_template_threshold=0.5,
+        ship_template_use_edges=True,
+        ship_template_allow_fallback=False,
+        ship_template_min_scale=0.6,
+    )
+    assert scene.ship_center_x is None
+    assert scene.ship_detection_mode is None
+    assert scene.ship_template_status == "rejected"
+    assert scene.ship_template_reject_reason == "min_scale"
+
+
 def test_detect_starfield_scene_search_margins_exclude_edge_false_anchor():
     image = _scene_image(ship_center=(280, 120), ship_size=(44, 16), ship_style="sprite")
     scene = detect_starfield_scene(
@@ -190,18 +257,17 @@ def test_detect_starfield_scene_finds_ship_and_ranks_objects_nearest_first():
         ship_center=(160, 120),
         ship_size=(44, 16),
         ship_style="sprite",
+        objects=((160, 225, 10),),
     )
-    draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle((190, 110, 210, 130), radius=5, fill=(220, 240, 255))
-    draw.rounded_rectangle((238, 108, 262, 132), radius=6, fill=(220, 240, 255))
-    draw.rounded_rectangle((150, 190, 170, 210), radius=5, fill=(220, 240, 255))
     scene = detect_starfield_scene(
         image,
         ship_template_enabled=True,
         ship_template_image=_ship_template_image((44, 16)),
         ship_template_scales=(1.0,),
-        ship_template_use_edges=False,
+        ship_template_use_edges=True,
         ship_template_allow_fallback=False,
+        ship_template_search_right_margin=120,
+        ship_candidate_exclusion_radius=80,
     )
     assert scene.ship_center_x is not None
     assert scene.ship_center_y is not None
@@ -214,9 +280,9 @@ def test_detect_starfield_scene_finds_ship_and_ranks_objects_nearest_first():
     assert abs(scene.ship_center_x - 160) <= 3
     assert abs(scene.ship_center_y - 120) <= 3
     ranked = get_ranked_planet_candidates(scene)
-    assert len(ranked) == 3
-    assert ranked[0].center_x == 200
-    assert ranked[0].center_y == 120
+    assert len(ranked) == 1
+    assert ranked[0].center_x == 160
+    assert ranked[0].center_y == 225
     assert ranked[0].radius is not None and ranked[0].radius >= 10
     assert ranked[0].area is not None and ranked[0].area >= 80
     assert select_nearest_candidate(scene) == ranked[0]
@@ -259,7 +325,7 @@ def test_detect_starfield_scene_respects_viewport_and_ignores_top_hud_blobs():
     image = _scene_image(
         ship_center=(160, 160),
         ship_size=(44, 16),
-        objects=((200, 160, 12),),
+        objects=((285, 160, 12),),
     )
     draw = ImageDraw.Draw(image)
     draw.rectangle((120, 12, 200, 30), fill=(255, 255, 255))
@@ -271,7 +337,7 @@ def test_detect_starfield_scene_respects_viewport_and_ignores_top_hud_blobs():
     assert abs(scene.ship_center_y - 160) <= 3
     ranked = get_ranked_planet_candidates(scene)
     assert len(ranked) == 1
-    assert (ranked[0].center_x, ranked[0].center_y) == (200, 160)
+    assert (ranked[0].center_x, ranked[0].center_y) == (285, 160)
 
 
 def test_detect_starfield_scene_ignores_excluded_peripheral_blobs_inside_viewport():
@@ -297,12 +363,12 @@ def test_detect_starfield_scene_excludes_ship_adjacent_artifact_blob():
     image = _scene_image(
         ship_center=(160, 160),
         ship_size=(44, 16),
-        objects=((195, 160, 7), (238, 160, 12)),
+        objects=((195, 160, 7), (290, 160, 12)),
     )
     scene = detect_starfield_scene(image, ship_exclusion_margin=14)
     ranked = get_ranked_planet_candidates(scene)
     assert len(ranked) == 1
-    assert (ranked[0].center_x, ranked[0].center_y) == (238, 160)
+    assert (ranked[0].center_x, ranked[0].center_y) == (290, 160)
 
 
 def test_detect_starfield_scene_excludes_broader_ship_cluster_blob():
@@ -320,6 +386,35 @@ def test_detect_starfield_scene_excludes_broader_ship_cluster_blob():
     ranked = get_ranked_planet_candidates(scene)
     assert len(ranked) == 1
     assert (ranked[0].center_x, ranked[0].center_y) == (50, 216)
+
+
+def test_detect_starfield_scene_excludes_near_ship_cluster_by_radius():
+    image = _scene_image(
+        ship_center=(160, 160),
+        ship_size=(44, 16),
+        objects=((205, 160, 12), (285, 160, 12)),
+    )
+    scene = detect_starfield_scene(
+        image,
+        ship_candidate_exclusion_radius=70,
+    )
+    ranked = get_ranked_planet_candidates(scene)
+    assert len(ranked) == 1
+    assert (ranked[0].center_x, ranked[0].center_y) == (285, 160)
+    assert scene.rejected_candidate_debug == ("[STARFIELD] reject reason=near_ship_cluster d=45.0",)
+
+
+def test_detect_starfield_scene_auto_ship_candidate_exclusion_uses_ship_width_scale():
+    image = _scene_image(
+        ship_center=(160, 160),
+        ship_size=(44, 16),
+        objects=((240, 160, 12), (280, 160, 12)),
+    )
+    scene = detect_starfield_scene(image, ship_candidate_exclusion_radius=0)
+    ranked = get_ranked_planet_candidates(scene)
+    assert len(ranked) == 1
+    assert (ranked[0].center_x, ranked[0].center_y) == (280, 160)
+    assert scene.rejected_candidate_debug
 
 
 def test_detect_starfield_scene_cluster_exclusion_can_leave_no_candidates():
@@ -341,12 +436,12 @@ def test_detect_starfield_scene_filters_tiny_background_blob_by_size():
     image = _scene_image(
         ship_center=(160, 160),
         ship_size=(44, 16),
-        objects=((210, 160, 4), (250, 160, 12)),
+        objects=((210, 160, 4), (280, 160, 12)),
     )
     scene = detect_starfield_scene(image, candidate_min_radius=6, candidate_min_area=80)
     ranked = get_ranked_planet_candidates(scene)
     assert len(ranked) == 1
-    assert (ranked[0].center_x, ranked[0].center_y) == (250, 160)
+    assert (ranked[0].center_x, ranked[0].center_y) == (280, 160)
 
 
 def test_detect_starfield_scene_rejects_implausibly_large_ship_anchor():
@@ -459,6 +554,27 @@ def test_format_ship_detection_debug_reports_template_match():
         ship_template_status="match",
         ship_match_score=0.91,
         ship_match_scale=0.5,
+        ship_template_raw_bbox=(138, 112, 182, 128),
     )
     text = format_ship_detection_debug(scene)
-    assert text == "[SHIP_DETECT] match=0.91 scale=0.50 center=(160,120)"
+    assert text == "[SHIP_DETECT] raw=0.91 scale=0.50 bbox=44x16 accepted center=(160,120)"
+
+
+def test_format_ship_detection_debug_reports_template_rejection():
+    scene = StarfieldScene(
+        ship_center_x=160,
+        ship_center_y=120,
+        ship_radius=22,
+        ship_bbox=(138, 112, 182, 128),
+        ship_area=500,
+        ship_reject_reason=None,
+        objects=(),
+        ship_detection_mode="heuristic",
+        ship_template_status="rejected",
+        ship_match_score=0.93,
+        ship_match_scale=0.08,
+        ship_template_reject_reason="min_width",
+        ship_template_raw_bbox=(334, 479, 352, 502),
+    )
+    text = format_ship_detection_debug(scene)
+    assert text == "[SHIP_DETECT] raw=0.93 scale=0.08 bbox=18x23 rejected=min_width fallback=heuristic"

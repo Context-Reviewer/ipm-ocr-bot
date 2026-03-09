@@ -106,7 +106,7 @@ def test_starfield_probe_uses_provided_image_without_recapturing():
 
     result = try_open_nearest_starfield_candidate(
         capture=BrokenCapture(),
-        image=_scene_image(ship_center=(160, 120), objects=((200, 120, 12),)),
+        image=_scene_image(ship_center=(160, 120), objects=((270, 120, 12),)),
         actions=FakeActions(),
         reader=FakeReader(PlanetPanelState(planet_id=1, title="1. BALOR")),
         panel_is_readable=_panel_is_readable,
@@ -114,13 +114,13 @@ def test_starfield_probe_uses_provided_image_without_recapturing():
     )
     assert result.ok is True
     assert result.reason == "open_confirmed"
-    assert result.target_point == (200, 120)
+    assert result.target_point == (270, 120)
 
 
 def test_starfield_probe_fails_closed_when_template_detection_misses_without_fallback():
     actions = FakeActions()
     result = try_open_nearest_starfield_candidate(
-        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((200, 120, 12),))),
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((270, 120, 12),))),
         actions=actions,
         reader=FakeReader(PlanetPanelState(planet_id=1, title="1. BALOR")),
         panel_is_readable=_panel_is_readable,
@@ -138,7 +138,7 @@ def test_starfield_probe_fails_closed_when_template_detection_misses_without_fal
 def test_starfield_probe_can_fallback_when_template_search_region_misses():
     actions = FakeActions()
     result = try_open_nearest_starfield_candidate(
-        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((200, 120, 12),))),
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((270, 120, 12),))),
         actions=actions,
         reader=FakeReader(PlanetPanelState(planet_id=1, title="1. BALOR")),
         panel_is_readable=_panel_is_readable,
@@ -149,14 +149,14 @@ def test_starfield_probe_can_fallback_when_template_search_region_misses():
     )
     assert result.ok is True
     assert result.reason == "open_confirmed"
-    assert result.target_point == (200, 120)
+    assert result.target_point == (270, 120)
 
 
 def test_starfield_probe_fails_closed_when_not_starfield_ready():
     actions = FakeActions()
     open_panel = PlanetPanelState(planet_id=2, title="DRAŠTA", mining_level=2, mining_cost=233)
     result = try_open_nearest_starfield_candidate(
-        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((200, 120, 12),))),
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((270, 120, 12),))),
         actions=actions,
         reader=FakeReader(open_panel),
         panel_is_readable=_panel_is_readable,
@@ -184,7 +184,7 @@ def test_starfield_probe_fails_closed_when_no_candidates():
 def test_starfield_probe_fails_closed_when_requested_rank_is_unavailable():
     actions = FakeActions()
     result = try_open_starfield_candidate_by_rank(
-        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((200, 120, 12),))),
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((270, 120, 12),))),
         actions=actions,
         reader=FakeReader(PlanetPanelState(planet_id=1, title="1. BALOR")),
         target_rank=2,
@@ -218,7 +218,7 @@ def test_starfield_probe_rank_becomes_unavailable_after_ship_cluster_exclusion()
 def test_starfield_probe_selects_nearest_candidate_and_confirms_panel():
     actions = FakeActions()
     result = try_open_nearest_starfield_candidate(
-        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((200, 120, 12), (250, 120, 14)))),
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((270, 120, 12), (300, 120, 14)))),
         actions=actions,
         reader=FakeReader(PlanetPanelState(planet_id=1, title="1. BALOR")),
         panel_is_readable=_panel_is_readable,
@@ -226,14 +226,90 @@ def test_starfield_probe_selects_nearest_candidate_and_confirms_panel():
     )
     assert result.ok is True
     assert result.reason == "open_confirmed"
-    assert result.target_point == (200, 120)
+    assert result.target_point == (270, 120)
     assert actions.calls[0][0] == "click_client_point"
+    assert actions.calls == [("click_client_point", (270, 120), 0.0)]
+
+
+def test_starfield_probe_small_candidate_uses_fallback_click_after_primary_confirmation_failure():
+    actions = FakeActions()
+    reader = FakeReader(
+        [
+            PlanetPanelState(title="Ship Speed", mining_cost=300, speed_cost=400),
+            PlanetPanelState(planet_id=1, title="1. BALOR"),
+        ]
+    )
+    result = try_open_nearest_starfield_candidate(
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((270, 120, 12),))),
+        actions=actions,
+        reader=reader,
+        panel_is_readable=_panel_is_readable,
+        panel_is_confirmed=lambda panel: bool(panel and panel.title == "1. BALOR"),
+        settle_seconds=0.0,
+        small_candidate_fallback_max_radius=20,
+        small_candidate_fallback_offset_x=10,
+        small_candidate_fallback_offset_y=0,
+    )
+    assert result.ok is True
+    assert result.reason == "open_confirmed"
+    assert result.target_point == (280, 120)
+    assert actions.calls == [
+        ("click_client_point", (270, 120), 0.0),
+        ("click_client_point", (280, 120), 0.0),
+    ]
+
+
+def test_starfield_probe_small_candidate_returns_panel_not_confirmed_after_fallback_exhausted():
+    actions = FakeActions()
+    reader = FakeReader(
+        [
+            PlanetPanelState(title="Ship Speed", mining_cost=300, speed_cost=400),
+            PlanetPanelState(title="Ship Speed", mining_cost=350, speed_cost=450),
+        ]
+    )
+    result = try_open_nearest_starfield_candidate(
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((270, 120, 12),))),
+        actions=actions,
+        reader=reader,
+        panel_is_readable=_panel_is_readable,
+        panel_is_confirmed=lambda panel: bool(panel and panel.title == "1. BALOR"),
+        settle_seconds=0.0,
+        small_candidate_fallback_max_radius=20,
+        small_candidate_fallback_offset_x=10,
+        small_candidate_fallback_offset_y=0,
+    )
+    assert result.ok is False
+    assert result.reason == "panel_not_confirmed"
+    assert result.target_point == (270, 120)
+    assert actions.calls == [
+        ("click_client_point", (270, 120), 0.0),
+        ("click_client_point", (280, 120), 0.0),
+    ]
+
+
+def test_starfield_probe_large_candidate_does_not_attempt_fallback_click():
+    actions = FakeActions()
+    reader = FakeReader(PlanetPanelState(title="Ship Speed", mining_cost=300, speed_cost=400))
+    result = try_open_nearest_starfield_candidate(
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((270, 120, 24),))),
+        actions=actions,
+        reader=reader,
+        panel_is_readable=_panel_is_readable,
+        panel_is_confirmed=lambda panel: bool(panel and panel.title == "1. BALOR"),
+        settle_seconds=0.0,
+        small_candidate_fallback_max_radius=20,
+        small_candidate_fallback_offset_x=10,
+        small_candidate_fallback_offset_y=0,
+    )
+    assert result.ok is False
+    assert result.reason == "panel_not_confirmed"
+    assert actions.calls == [("click_client_point", (270, 120), 0.0)]
 
 
 def test_starfield_probe_selects_requested_rank_deterministically():
     actions = FakeActions()
     result = try_open_starfield_candidate_by_rank(
-        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((200, 120, 12), (250, 120, 14)))),
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((270, 120, 12), (300, 120, 14)))),
         actions=actions,
         reader=FakeReader(PlanetPanelState(planet_id=1, title="1. BALOR")),
         target_rank=2,
@@ -243,13 +319,13 @@ def test_starfield_probe_selects_requested_rank_deterministically():
     assert result.ok is True
     assert result.reason == "open_confirmed"
     assert result.rank == 2
-    assert result.target_point == (250, 120)
-    assert actions.calls[0] == ("click_client_point", (250, 120), 0.0)
+    assert result.target_point == (300, 120)
+    assert actions.calls[0] == ("click_client_point", (300, 120), 0.0)
 
 
 def test_starfield_probe_failed_confirmation_is_not_success():
     result = try_open_nearest_starfield_candidate(
-        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((200, 120, 12),))),
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((270, 120, 12),))),
         actions=FakeActions(),
         reader=FakeReader(PlanetPanelState()),
         panel_is_readable=_panel_is_readable,
@@ -261,7 +337,7 @@ def test_starfield_probe_failed_confirmation_is_not_success():
 
 def test_starfield_probe_requires_stricter_confirmation_when_provided():
     result = try_open_nearest_starfield_candidate(
-        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((200, 120, 12),))),
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((270, 120, 12),))),
         actions=FakeActions(),
         reader=FakeReader(PlanetPanelState(title="Ship Speed", mining_cost=300, speed_cost=400)),
         panel_is_readable=_panel_is_readable,
@@ -310,7 +386,7 @@ def test_starfield_probe_fails_closed_when_ship_is_too_thin():
 def test_discover_nearest_starfield_planet_resolves_canonical_identity():
     actions = FakeActions()
     result = discover_nearest_starfield_planet(
-        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((200, 120, 12), (250, 120, 14)))),
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((270, 120, 12), (300, 120, 14)))),
         actions=actions,
         reader=FakeReader(
             PlanetPanelState(
@@ -330,7 +406,7 @@ def test_discover_nearest_starfield_planet_resolves_canonical_identity():
     assert result.ok is True
     assert result.reason == "ok"
     assert result.target_rank == 1
-    assert result.target_point == (200, 120)
+    assert result.target_point == (270, 120)
     assert result.planet_title_raw == "DRAŠTA"
     assert result.planet_title_canonical == "Drasta"
     assert result.planet_id == 2
@@ -339,7 +415,7 @@ def test_discover_nearest_starfield_planet_resolves_canonical_identity():
 
 def test_discover_starfield_planet_by_rank_selects_second_candidate():
     result = discover_starfield_planet_by_rank(
-        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((200, 120, 12), (250, 120, 14)))),
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((270, 120, 12), (300, 120, 14)))),
         actions=FakeActions(),
         reader=FakeReader(
             PlanetPanelState(
@@ -360,14 +436,14 @@ def test_discover_starfield_planet_by_rank_selects_second_candidate():
     assert result.ok is True
     assert result.reason == "ok"
     assert result.target_rank == 2
-    assert result.target_point == (250, 120)
+    assert result.target_point == (300, 120)
     assert result.planet_title_canonical == "Dholen"
 
 
 def test_discover_starfield_planet_by_rank_fails_closed_when_rank_is_unavailable():
     actions = FakeActions()
     result = discover_starfield_planet_by_rank(
-        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((200, 120, 12),))),
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((270, 120, 12),))),
         actions=actions,
         reader=FakeReader(PlanetPanelState(planet_id=4, title="DHOLEN", mining_level=2, mining_cost=233)),
         target_rank=3,
@@ -385,7 +461,7 @@ def test_discover_starfield_planet_by_rank_fails_closed_when_rank_is_unavailable
 
 def test_discover_nearest_starfield_planet_fails_when_identity_is_unresolved():
     result = discover_nearest_starfield_planet(
-        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((200, 120, 12),))),
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((270, 120, 12),))),
         actions=FakeActions(),
         reader=FakeReader(PlanetPanelState(title="MYSTERY", mining_level=2, mining_cost=233)),
         panel_is_readable=_panel_is_readable,
@@ -401,7 +477,7 @@ def test_discover_nearest_starfield_planet_fails_when_identity_is_unresolved():
 def test_discover_nearest_starfield_planet_preserves_fail_closed_reason():
     open_panel = PlanetPanelState(planet_id=2, title="DRAŠTA", mining_level=2, mining_cost=233)
     result = discover_nearest_starfield_planet(
-        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((200, 120, 12),))),
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((270, 120, 12),))),
         actions=FakeActions(),
         reader=FakeReader(open_panel),
         panel_is_readable=_panel_is_readable,
@@ -421,7 +497,7 @@ def test_discover_nearest_starfield_planet_reports_return_to_starfield_failure()
         return actions.close_planet_panel()
 
     result = discover_nearest_starfield_planet(
-        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((200, 120, 12),))),
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((270, 120, 12),))),
         actions=actions,
         reader=FakeReader(
             PlanetPanelState(
@@ -467,7 +543,7 @@ def test_discover_nearest_starfield_planet_returns_to_starfield_after_success():
         return not _panel_is_readable(reader.read())
 
     result = discover_nearest_starfield_planet(
-        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((200, 120, 12),))),
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((270, 120, 12),))),
         actions=actions,
         reader=reader,
         panel_is_readable=_panel_is_readable,
@@ -536,7 +612,7 @@ def test_planets_task_debug_flag_disabled_keeps_existing_path():
             reader=Reader(),
             state_reader=StateReader(),
             actions=actions,
-            capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((200, 120, 12),))),
+            capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((270, 120, 12),))),
             config=runtime_config,
         ).run()
     finally:

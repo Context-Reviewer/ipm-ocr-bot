@@ -11,6 +11,7 @@ from .starfield_scene import (
     annotate_starfield_scene,
     detect_starfield_scene,
     format_ship_detection_debug,
+    format_ship_detection_followup_debug,
     format_starfield_scene_debug,
     get_ranked_planet_candidates,
 )
@@ -120,7 +121,7 @@ def try_open_starfield_candidate_by_rank(
     scene_exclusion_zones: tuple[tuple[float, float, float, float], ...] | None = None,
     ship_template_enabled: bool = False,
     ship_template_path: str | None = None,
-    ship_template_scales: tuple[float, ...] = (1.0, 0.75, 0.5, 0.35, 0.25, 0.18, 0.12, 0.08),
+    ship_template_scales: tuple[float, ...] = (0.12, 0.14, 0.16, 0.18, 0.20, 0.22, 0.25),
     ship_template_threshold: float = 0.55,
     ship_template_use_edges: bool = True,
     ship_template_allow_fallback: bool = True,
@@ -145,6 +146,9 @@ def try_open_starfield_candidate_by_rank(
     min_ship_bbox_width: int = 20,
     min_ship_bbox_height: int = 8,
     min_ship_area: int = 150,
+    heuristic_fallback_min_bbox_width: int = 20,
+    heuristic_fallback_min_bbox_height: int = 12,
+    heuristic_fallback_min_area: int = 180,
     max_ship_radius: int = 72,
     max_ship_bbox_width: int = 140,
     max_ship_bbox_height: int = 90,
@@ -214,6 +218,9 @@ def try_open_starfield_candidate_by_rank(
         min_ship_bbox_width=min_ship_bbox_width,
         min_ship_bbox_height=min_ship_bbox_height,
         min_ship_area=min_ship_area,
+        heuristic_fallback_min_bbox_width=heuristic_fallback_min_bbox_width,
+        heuristic_fallback_min_bbox_height=heuristic_fallback_min_bbox_height,
+        heuristic_fallback_min_area=heuristic_fallback_min_area,
         max_ship_radius=max_ship_radius,
         max_ship_bbox_width=max_ship_bbox_width,
         max_ship_bbox_height=max_ship_bbox_height,
@@ -222,6 +229,8 @@ def try_open_starfield_candidate_by_rank(
     ship_debug = format_ship_detection_debug(scene)
     if ship_debug:
         print(ship_debug)
+    for ship_followup in format_ship_detection_followup_debug(scene):
+        print(ship_followup)
     print(format_starfield_scene_debug(scene))
     for rejected in scene.rejected_candidate_debug:
         print(rejected)

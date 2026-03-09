@@ -33,6 +33,10 @@ class StarfieldScene:
     ship_match_scale: float | None = None
     ship_template_reject_reason: str | None = None
     ship_template_raw_bbox: tuple[int, int, int, int] | None = None
+    heuristic_detection_status: str | None = None
+    heuristic_reject_reason: str | None = None
+    heuristic_raw_bbox: tuple[int, int, int, int] | None = None
+    heuristic_raw_area: int | None = None
     viewport: tuple[int, int, int, int] | None = None
     exclusion_zones: tuple[tuple[int, int, int, int], ...] = ()
     rejected_candidate_debug: tuple[str, ...] = ()
@@ -352,7 +356,7 @@ def detect_starfield_scene(
     exclusion_zones: tuple[tuple[int, int, int, int], ...] | None = None,
     ship_template_enabled: bool = False,
     ship_template_path: str | None = None,
-    ship_template_scales: tuple[float, ...] = (1.0, 0.75, 0.5, 0.35, 0.25, 0.18, 0.12, 0.08),
+    ship_template_scales: tuple[float, ...] = (0.12, 0.14, 0.16, 0.18, 0.20, 0.22, 0.25),
     ship_template_threshold: float = 0.55,
     ship_template_use_edges: bool = True,
     ship_template_allow_fallback: bool = True,
@@ -374,6 +378,9 @@ def detect_starfield_scene(
     min_ship_bbox_width: int = 20,
     min_ship_bbox_height: int = 8,
     min_ship_area: int = 150,
+    heuristic_fallback_min_bbox_width: int = 20,
+    heuristic_fallback_min_bbox_height: int = 12,
+    heuristic_fallback_min_area: int = 180,
     max_ship_radius: int = 72,
     max_ship_bbox_width: int = 140,
     max_ship_bbox_height: int = 90,
@@ -391,6 +398,9 @@ def detect_starfield_scene(
     template_detection: ShipTemplateDetection | None = None
     detected_ship: _Component | None = None
     ship_detection_mode: str | None = None
+    heuristic_detection_status: str | None = None
+    heuristic_reject_reason: str | None = None
+    heuristic_raw_ship: _Component | None = None
     if ship_template_enabled:
         template_search_region = _normalize_search_region_margins(
             image_size=working_image.size,
@@ -416,9 +426,31 @@ def detect_starfield_scene(
         if detected_ship is not None:
             ship_detection_mode = "template"
     if detected_ship is None and (not ship_template_enabled or ship_template_allow_fallback):
-        detected_ship = _detect_ship(components, image_size=working_image.size)
-        if detected_ship is not None:
+        heuristic_raw_ship = _detect_ship(components, image_size=working_image.size)
+        if heuristic_raw_ship is None:
+            heuristic_detection_status = "not_found"
+        elif not ship_template_enabled:
+            detected_ship = heuristic_raw_ship
             ship_detection_mode = "heuristic"
+            heuristic_detection_status = "accepted"
+        else:
+            heuristic_reject_reason = _ship_reject_reason(
+                heuristic_raw_ship,
+                image_size=working_image.size,
+                min_bbox_width=max(1, int(heuristic_fallback_min_bbox_width)),
+                min_bbox_height=max(1, int(heuristic_fallback_min_bbox_height)),
+                min_area=max(1, int(heuristic_fallback_min_area)),
+                max_radius=max(1, int(max_ship_radius)),
+                max_bbox_width=max(1, int(max_ship_bbox_width)),
+                max_bbox_height=max(1, int(max_ship_bbox_height)),
+                max_area_ratio=max(0.0, float(max_ship_area_ratio)),
+            )
+            if heuristic_reject_reason is None:
+                detected_ship = heuristic_raw_ship
+                ship_detection_mode = "heuristic"
+                heuristic_detection_status = "accepted"
+            else:
+                heuristic_detection_status = "rejected"
     ship_reject_reason = _ship_reject_reason(
         detected_ship,
         image_size=working_image.size,
@@ -486,6 +518,19 @@ def detect_starfield_scene(
         ship_match_scale=template_detection.best_scale if template_detection is not None else None,
         ship_template_reject_reason=template_detection.reject_reason if template_detection is not None else None,
         ship_template_raw_bbox=template_detection.raw_match.bbox if template_detection is not None and template_detection.raw_match is not None else None,
+        heuristic_detection_status=heuristic_detection_status,
+        heuristic_reject_reason=heuristic_reject_reason,
+        heuristic_raw_bbox=(
+            (
+                heuristic_raw_ship.bbox[0] + left,
+                heuristic_raw_ship.bbox[1] + top,
+                heuristic_raw_ship.bbox[2] + left,
+                heuristic_raw_ship.bbox[3] + top,
+            )
+            if heuristic_raw_ship is not None
+            else None
+        ),
+        heuristic_raw_area=heuristic_raw_ship.area if heuristic_raw_ship is not None else None,
         viewport=normalized_viewport,
         exclusion_zones=tuple(
             (zone_left + left, zone_top + top, zone_right + left, zone_bottom + top)
@@ -569,6 +614,41 @@ def format_ship_detection_debug(scene: StarfieldScene) -> str | None:
         suffix = " fallback=heuristic" if scene.ship_detection_mode == "heuristic" else ""
         return f"[SHIP_DETECT] result=template_missing{suffix}"
     return f"[SHIP_DETECT] result={status}"
+
+
+def format_ship_detection_followup_debug(scene: StarfieldScene) -> tuple[str, ...]:
+    lines: list[str] = []
+    if scene.heuristic_detection_status == "accepted":
+        bbox = (
+            f" bbox={scene.heuristic_raw_bbox[2] - scene.heuristic_raw_bbox[0]}x"
+            f"{scene.heuristic_raw_bbox[3] - scene.heuristic_raw_bbox[1]}"
+            if scene.heuristic_raw_bbox is not None
+            else ""
+        )
+        area = f" a={scene.heuristic_raw_area}" if scene.heuristic_raw_area is not None else ""
+        if scene.ship_center_x is not None and scene.ship_center_y is not None:
+            lines.append(
+                "[SHIP_DETECT] "
+                f"heuristic=accepted{bbox}{area} center=({scene.ship_center_x},{scene.ship_center_y})"
+            )
+    elif scene.heuristic_detection_status == "rejected":
+        bbox = (
+            f" bbox={scene.heuristic_raw_bbox[2] - scene.heuristic_raw_bbox[0]}x"
+            f"{scene.heuristic_raw_bbox[3] - scene.heuristic_raw_bbox[1]}"
+            if scene.heuristic_raw_bbox is not None
+            else ""
+        )
+        area = f" a={scene.heuristic_raw_area}" if scene.heuristic_raw_area is not None else ""
+        lines.append(
+            "[SHIP_DETECT] "
+            f"heuristic=rejected reason={scene.heuristic_reject_reason or 'rejected'}{bbox}{area}"
+        )
+    elif scene.heuristic_detection_status == "not_found":
+        lines.append("[SHIP_DETECT] heuristic=result=not_found")
+    if scene.ship_center_x is None and scene.ship_center_y is None:
+        if scene.ship_template_status is not None or scene.heuristic_detection_status is not None:
+            lines.append("[SHIP_DETECT] result=no_accepted_ship")
+    return tuple(lines)
 
 
 def annotate_starfield_scene(image: Image.Image, scene: StarfieldScene) -> Image.Image:

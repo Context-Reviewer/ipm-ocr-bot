@@ -28,8 +28,10 @@ class ShipTemplateMatch:
 class ShipTemplateDetection:
     status: str
     match: ShipTemplateMatch | None = None
+    raw_match: ShipTemplateMatch | None = None
     best_score: float | None = None
     best_scale: float | None = None
+    reject_reason: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -105,9 +107,13 @@ def detect_ship_template(
     template_path: str | None = None,
     template_image: Image.Image | None = None,
     search_region: tuple[int, int, int, int] | None = None,
-    scales: tuple[float, ...] = (1.0, 0.75, 0.5, 0.35, 0.25, 0.18, 0.12, 0.08),
+    scales: tuple[float, ...] = (0.12, 0.14, 0.16, 0.18, 0.20, 0.22, 0.25),
     threshold: float = 0.55,
     use_edges: bool = True,
+    min_scale: float = 0.0,
+    min_width: int = 0,
+    min_height: int = 0,
+    min_area: int = 0,
 ) -> ShipTemplateDetection:
     prepared = (
         _prepare_template(template_image)
@@ -180,5 +186,48 @@ def detect_ship_template(
     if best_score is None or best_scale is None or best_match is None:
         return ShipTemplateDetection(status="not_found")
     if best_score < float(threshold):
-        return ShipTemplateDetection(status="below_threshold", best_score=best_score, best_scale=best_scale)
-    return ShipTemplateDetection(status="match", match=best_match, best_score=best_score, best_scale=best_scale)
+        return ShipTemplateDetection(
+            status="below_threshold",
+            raw_match=best_match,
+            best_score=best_score,
+            best_scale=best_scale,
+        )
+    if float(best_match.scale) < float(min_scale):
+        return ShipTemplateDetection(
+            status="rejected",
+            raw_match=best_match,
+            best_score=best_score,
+            best_scale=best_scale,
+            reject_reason="min_scale",
+        )
+    if int(best_match.width) < int(min_width):
+        return ShipTemplateDetection(
+            status="rejected",
+            raw_match=best_match,
+            best_score=best_score,
+            best_scale=best_scale,
+            reject_reason="min_width",
+        )
+    if int(best_match.height) < int(min_height):
+        return ShipTemplateDetection(
+            status="rejected",
+            raw_match=best_match,
+            best_score=best_score,
+            best_scale=best_scale,
+            reject_reason="min_height",
+        )
+    if int(best_match.area) < int(min_area):
+        return ShipTemplateDetection(
+            status="rejected",
+            raw_match=best_match,
+            best_score=best_score,
+            best_scale=best_scale,
+            reject_reason="min_area",
+        )
+    return ShipTemplateDetection(
+        status="match",
+        match=best_match,
+        raw_match=best_match,
+        best_score=best_score,
+        best_scale=best_scale,
+    )

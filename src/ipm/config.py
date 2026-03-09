@@ -106,7 +106,7 @@ class StarfieldConfig:
     ship_template_enabled: bool = True
     ship_template_path: str = "src/assets/ship_template.png"
     ship_template_threshold: float = 0.55
-    ship_template_scales: tuple[float, ...] = (1.0, 0.75, 0.5, 0.35, 0.25, 0.18, 0.12, 0.08)
+    ship_template_scales: tuple[float, ...] = (0.12, 0.14, 0.16, 0.18, 0.20, 0.22, 0.25)
     ship_template_use_edges: bool = True
     ship_template_allow_fallback: bool = True
     ship_template_search_left_margin: int = 16
@@ -136,6 +136,9 @@ class StarfieldConfig:
     min_ship_bbox_width: int = 20
     min_ship_bbox_height: int = 8
     min_ship_area: int = 150
+    heuristic_fallback_min_bbox_width: int = 20
+    heuristic_fallback_min_bbox_height: int = 12
+    heuristic_fallback_min_area: int = 180
     max_ship_radius: int = 72
     max_ship_bbox_width: int = 140
     max_ship_bbox_height: int = 90

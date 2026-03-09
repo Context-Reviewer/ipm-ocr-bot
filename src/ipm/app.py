@@ -201,7 +201,7 @@ class Application:
             scene_exclusion_zones=getattr(self.config.starfield, "scene_exclusion_zones", None),
             ship_template_enabled=bool(getattr(self.config.starfield, "ship_template_enabled", True)),
             ship_template_path=str(getattr(self.config.starfield, "ship_template_path", "src/assets/ship_template.png")),
-            ship_template_scales=tuple(getattr(self.config.starfield, "ship_template_scales", (1.0, 0.75, 0.5, 0.35, 0.25, 0.18, 0.12, 0.08))),
+            ship_template_scales=tuple(getattr(self.config.starfield, "ship_template_scales", (0.12, 0.14, 0.16, 0.18, 0.20, 0.22, 0.25))),
             ship_template_threshold=float(getattr(self.config.starfield, "ship_template_threshold", 0.55)),
             ship_template_use_edges=bool(getattr(self.config.starfield, "ship_template_use_edges", True)),
             ship_template_allow_fallback=bool(getattr(self.config.starfield, "ship_template_allow_fallback", True)),
@@ -237,6 +237,15 @@ class Application:
             min_ship_bbox_width=int(getattr(self.config.starfield, "min_ship_bbox_width", 20)),
             min_ship_bbox_height=int(getattr(self.config.starfield, "min_ship_bbox_height", 8)),
             min_ship_area=int(getattr(self.config.starfield, "min_ship_area", 150)),
+            heuristic_fallback_min_bbox_width=int(
+                getattr(self.config.starfield, "heuristic_fallback_min_bbox_width", 20)
+            ),
+            heuristic_fallback_min_bbox_height=int(
+                getattr(self.config.starfield, "heuristic_fallback_min_bbox_height", 12)
+            ),
+            heuristic_fallback_min_area=int(
+                getattr(self.config.starfield, "heuristic_fallback_min_area", 180)
+            ),
             max_ship_radius=int(getattr(self.config.starfield, "max_ship_radius", 72)),
             max_ship_bbox_width=int(getattr(self.config.starfield, "max_ship_bbox_width", 140)),
             max_ship_bbox_height=int(getattr(self.config.starfield, "max_ship_bbox_height", 90)),
@@ -446,7 +455,7 @@ class Application:
             scene_exclusion_zones=getattr(self.config.starfield, "scene_exclusion_zones", None),
             ship_template_enabled=bool(getattr(self.config.starfield, "ship_template_enabled", True)),
             ship_template_path=str(getattr(self.config.starfield, "ship_template_path", "src/assets/ship_template.png")),
-            ship_template_scales=tuple(getattr(self.config.starfield, "ship_template_scales", (1.0, 0.75, 0.5, 0.35, 0.25, 0.18, 0.12, 0.08))),
+            ship_template_scales=tuple(getattr(self.config.starfield, "ship_template_scales", (0.12, 0.14, 0.16, 0.18, 0.20, 0.22, 0.25))),
             ship_template_threshold=float(getattr(self.config.starfield, "ship_template_threshold", 0.55)),
             ship_template_use_edges=bool(getattr(self.config.starfield, "ship_template_use_edges", True)),
             ship_template_allow_fallback=bool(getattr(self.config.starfield, "ship_template_allow_fallback", True)),
@@ -482,6 +491,15 @@ class Application:
             min_ship_bbox_width=int(getattr(self.config.starfield, "min_ship_bbox_width", 20)),
             min_ship_bbox_height=int(getattr(self.config.starfield, "min_ship_bbox_height", 8)),
             min_ship_area=int(getattr(self.config.starfield, "min_ship_area", 150)),
+            heuristic_fallback_min_bbox_width=int(
+                getattr(self.config.starfield, "heuristic_fallback_min_bbox_width", 20)
+            ),
+            heuristic_fallback_min_bbox_height=int(
+                getattr(self.config.starfield, "heuristic_fallback_min_bbox_height", 12)
+            ),
+            heuristic_fallback_min_area=int(
+                getattr(self.config.starfield, "heuristic_fallback_min_area", 180)
+            ),
             max_ship_radius=int(getattr(self.config.starfield, "max_ship_radius", 72)),
             max_ship_bbox_width=int(getattr(self.config.starfield, "max_ship_bbox_width", 140)),
             max_ship_bbox_height=int(getattr(self.config.starfield, "max_ship_bbox_height", 90)),

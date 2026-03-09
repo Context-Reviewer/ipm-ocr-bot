@@ -8,6 +8,7 @@ from PIL import Image
 import ipm.app as app_module
 from ipm.app import Application, UIStateCheck, prepare_run_artifact_dir, save_run_frame
 from ipm.config import RuntimeConfig
+from ipm.focus import FocusResult
 from ipm.starfield_probe import PlanetDiscoveryResult
 
 
@@ -208,7 +209,16 @@ def test_recover_starfield_overlay_uses_safe_dismiss_then_reset_ui_and_stays_fai
 def test_run_discovery_recovers_before_proceeding(monkeypatch, tmp_path):
     app = _make_app(tmp_path)
     frame = Image.new("RGB", (600, 1100), "black")
-    monkeypatch.setattr(app_module, "ensure_focus", lambda focus: True)
+    monkeypatch.setattr(
+        app_module,
+        "ensure_focus_result",
+        lambda focus: FocusResult(
+            ok=True,
+            reason="already_focused",
+            active_title_before="BlueStacks App Player",
+            active_title_after="BlueStacks App Player",
+        ),
+    )
     monkeypatch.setattr(app_module, "prepare_run_artifact_dir", lambda **kwargs: tmp_path)
     monkeypatch.setattr(Application, "_capture_frame", lambda self: frame)
 
@@ -244,7 +254,16 @@ def test_run_discovery_recovers_before_proceeding(monkeypatch, tmp_path):
 def test_run_discovery_fails_closed_when_overlay_not_dismissed(monkeypatch, tmp_path):
     app = _make_app(tmp_path)
     frames = iter([_overlay_image(), _overlay_image(), _overlay_image()])
-    monkeypatch.setattr(app_module, "ensure_focus", lambda focus: True)
+    monkeypatch.setattr(
+        app_module,
+        "ensure_focus_result",
+        lambda focus: FocusResult(
+            ok=True,
+            reason="already_focused",
+            active_title_before="BlueStacks App Player",
+            active_title_after="BlueStacks App Player",
+        ),
+    )
     monkeypatch.setattr(Application, "_capture_frame", lambda self: next(frames))
 
     def fail_if_called(**kwargs):
@@ -259,7 +278,16 @@ def test_run_discovery_fails_closed_when_overlay_not_dismissed(monkeypatch, tmp_
 
 def test_run_discovery_aborts_cleanly_when_recovery_fails(monkeypatch, tmp_path):
     app = _make_app(tmp_path)
-    monkeypatch.setattr(app_module, "ensure_focus", lambda focus: True)
+    monkeypatch.setattr(
+        app_module,
+        "ensure_focus_result",
+        lambda focus: FocusResult(
+            ok=True,
+            reason="already_focused",
+            active_title_before="BlueStacks App Player",
+            active_title_after="BlueStacks App Player",
+        ),
+    )
     monkeypatch.setattr(Application, "_capture_frame", lambda self: Image.new("RGB", (600, 1100), "black"))
     monkeypatch.setattr(Application, "_recover_starfield", lambda self, *, stage, image: (False, None))
 
@@ -273,10 +301,76 @@ def test_run_discovery_aborts_cleanly_when_recovery_fails(monkeypatch, tmp_path)
     assert result == 1
 
 
+def test_run_starfield_probe_logs_focus_diagnostics_when_focus_unavailable(monkeypatch, tmp_path, capsys):
+    app = _make_app(tmp_path)
+    monkeypatch.setattr(
+        app_module,
+        "ensure_focus_result",
+        lambda focus: FocusResult(
+            ok=False,
+            reason="setforeground_failed",
+            active_title_before="PowerShell 7",
+            active_title_after="Google Chrome",
+            activation_status="setforeground_failed",
+            activation_error="error text",
+            target_title="BlueStacks App Player",
+        ),
+    )
+
+    result = app.run_starfield_probe_once()
+
+    captured = capsys.readouterr().out
+    assert result == 1
+    assert "[STARFIELD_PROBE] result=focus_unavailable" in captured
+    assert "reason=setforeground_failed" in captured
+    assert "active_title_before='PowerShell 7'" in captured
+    assert "active_title_after='Google Chrome'" in captured
+    assert "activation_status=setforeground_failed" in captured
+    assert "activation_error='error text'" in captured
+    assert "target_title='BlueStacks App Player'" in captured
+
+
+def test_run_discovery_logs_focus_diagnostics_when_focus_unavailable(monkeypatch, tmp_path, capsys):
+    app = _make_app(tmp_path)
+    monkeypatch.setattr(
+        app_module,
+        "ensure_focus_result",
+        lambda focus: FocusResult(
+            ok=False,
+            reason="foreground_mismatch",
+            active_title_before="PowerShell 7",
+            active_title_after="Microsoft Edge",
+            activation_status="foreground_mismatch",
+            activation_error="",
+            target_title="BlueStacks App Player",
+        ),
+    )
+
+    result = app.run_discover_planet_rank_once(1)
+
+    captured = capsys.readouterr().out
+    assert result == 1
+    assert "[PLANET_DISCOVERY] result=focus_unavailable" in captured
+    assert "reason=foreground_mismatch" in captured
+    assert "active_title_before='PowerShell 7'" in captured
+    assert "active_title_after='Microsoft Edge'" in captured
+    assert "activation_status=foreground_mismatch" in captured
+    assert "target_title='BlueStacks App Player'" in captured
+
+
 def test_run_discovery_reports_return_failure_when_post_open_recovery_fails(monkeypatch, tmp_path):
     app = _make_app(tmp_path)
     frame = Image.new("RGB", (600, 1100), "black")
-    monkeypatch.setattr(app_module, "ensure_focus", lambda focus: True)
+    monkeypatch.setattr(
+        app_module,
+        "ensure_focus_result",
+        lambda focus: FocusResult(
+            ok=True,
+            reason="already_focused",
+            active_title_before="BlueStacks App Player",
+            active_title_after="BlueStacks App Player",
+        ),
+    )
     monkeypatch.setattr(app_module, "prepare_run_artifact_dir", lambda **kwargs: tmp_path)
     monkeypatch.setattr(Application, "_capture_frame", lambda self: frame)
 

@@ -13,7 +13,7 @@ from PIL import ImageStat
 from .actions import ActionDriver
 from .capture import create_capture_backend
 from .config import RuntimeConfig, load_runtime_config
-from .focus import ensure_focus, get_active_window_title
+from .focus import ensure_focus_result, get_active_window_title
 from .perception import create_perception_backend
 from .readers import HudReader, OrePanelReader, PlanetPanelReader, SellDialogReader
 from .rects import RectStore
@@ -143,10 +143,26 @@ class Application:
         )
         self.runtime.last_heartbeat_at = now
 
+    @staticmethod
+    def _format_focus_failure(result) -> str:
+        details = [
+            f"reason={result.reason}",
+            f"active_title_before={result.active_title_before!r}",
+            f"active_title_after={result.active_title_after!r}",
+        ]
+        if result.activation_status:
+            details.append(f"activation_status={result.activation_status}")
+        if result.activation_error:
+            details.append(f"activation_error={result.activation_error!r}")
+        if result.target_title:
+            details.append(f"target_title={result.target_title!r}")
+        return " ".join(details)
+
     def tick(self) -> None:
         now = time.monotonic()
-        if not ensure_focus(self.config.focus):
-            print(f"[AFK] waiting for focus: {get_active_window_title()}")
+        focus_result = ensure_focus_result(self.config.focus)
+        if not focus_result.ok:
+            print(f"[AFK] waiting for focus: {self._format_focus_failure(focus_result)}")
             return
         self.heartbeat(now)
         for scheduled in self.scheduler.due(now, self.runtime.next_run_at):
@@ -172,8 +188,9 @@ class Application:
         if not bool(getattr(self.config.starfield, "enable_click_probe", False)):
             print("[STARFIELD_PROBE] result=probe_disabled")
             return 1
-        if not ensure_focus(self.config.focus):
-            print("[STARFIELD_PROBE] result=focus_unavailable")
+        focus_result = ensure_focus_result(self.config.focus)
+        if not focus_result.ok:
+            print(f"[STARFIELD_PROBE] result=focus_unavailable {self._format_focus_failure(focus_result)}")
             return 1
         planet_task = self.tasks.get("planets")
         if planet_task is None or getattr(planet_task, "reader", None) is None:
@@ -467,8 +484,9 @@ class Application:
         if not bool(getattr(self.config.starfield, "enable_click_probe", False)):
             print("[PLANET_DISCOVERY] result=probe_disabled")
             return 1
-        if not ensure_focus(self.config.focus):
-            print("[PLANET_DISCOVERY] result=focus_unavailable")
+        focus_result = ensure_focus_result(self.config.focus)
+        if not focus_result.ok:
+            print(f"[PLANET_DISCOVERY] result=focus_unavailable {self._format_focus_failure(focus_result)}")
             return 1
         planet_task = self.tasks.get("planets")
         if planet_task is None or getattr(planet_task, "reader", None) is None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 from dataclasses import dataclass
 import time
 from typing import Optional
@@ -27,9 +28,12 @@ class ActivationResult:
     active_title_after: str
     target_title: str = ""
     error_message: str = ""
+    used_attach_thread_input: bool = False
 
 
 _RECT_CACHE: dict[str, tuple[float, ClientRect]] = {}
+_USER32 = ctypes.WinDLL("user32", use_last_error=True)
+_KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
 
 def _enum_windows():
@@ -73,17 +77,58 @@ def get_foreground_window_title() -> str:
     return _get_window_title(hwnd)
 
 
-def activate_window_result(hwnd: int) -> ActivationResult:
-    active_title_before = get_foreground_window_title()
-    target_title = _get_window_title(hwnd)
+def _get_foreground_window_handle() -> int:
+    try:
+        return int(win32gui.GetForegroundWindow())
+    except Exception:
+        return 0
+
+
+def _get_current_thread_id() -> int:
+    try:
+        return int(_KERNEL32.GetCurrentThreadId())
+    except Exception:
+        return 0
+
+
+def _get_window_thread_id(hwnd: int) -> int:
     if not hwnd:
-        return ActivationResult(
-            ok=False,
-            status="window_not_found",
-            hwnd=None,
-            active_title_before=active_title_before,
-            active_title_after=active_title_before,
-        )
+        return 0
+    try:
+        return int(_USER32.GetWindowThreadProcessId(int(hwnd), None))
+    except Exception:
+        return 0
+
+
+def _attach_thread_input_pair(source_thread_id: int, target_thread_id: int, attach: bool) -> tuple[bool, str]:
+    if source_thread_id <= 0 or target_thread_id <= 0 or source_thread_id == target_thread_id:
+        return True, ""
+    try:
+        try:
+            ctypes.set_last_error(0)
+        except Exception:
+            pass
+        result = int(_USER32.AttachThreadInput(int(source_thread_id), int(target_thread_id), int(bool(attach))))
+        if result:
+            return True, ""
+        error_code = int(ctypes.get_last_error())
+        if error_code:
+            return False, f"AttachThreadInput failed error={error_code}"
+        return False, "AttachThreadInput failed"
+    except Exception as exc:
+        return False, str(exc)
+
+
+def _run_activation_sequence(
+    hwnd: int,
+    *,
+    active_title_before: str,
+    target_title: str,
+    success_status: str,
+    mismatch_status: str,
+    setforeground_failed_status: str,
+    used_attach_thread_input: bool,
+) -> ActivationResult:
     try:
         if win32gui.IsIconic(hwnd):
             win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
@@ -97,35 +142,115 @@ def activate_window_result(hwnd: int) -> ActivationResult:
     except Exception as exc:
         return ActivationResult(
             ok=False,
-            status="setforeground_failed",
+            status=setforeground_failed_status,
             hwnd=hwnd,
             active_title_before=active_title_before,
             active_title_after=get_foreground_window_title(),
             target_title=target_title,
             error_message=str(exc),
+            used_attach_thread_input=used_attach_thread_input,
         )
 
     active_title_after = get_foreground_window_title()
-    active_hwnd = None
-    try:
-        active_hwnd = win32gui.GetForegroundWindow()
-    except Exception:
-        active_hwnd = None
+    active_hwnd = _get_foreground_window_handle()
     if active_hwnd == hwnd:
         return ActivationResult(
             ok=True,
-            status="activated",
+            status=success_status,
             hwnd=hwnd,
             active_title_before=active_title_before,
             active_title_after=active_title_after,
             target_title=target_title,
+            used_attach_thread_input=used_attach_thread_input,
         )
     return ActivationResult(
         ok=False,
-        status="foreground_mismatch",
+        status=mismatch_status,
         hwnd=hwnd,
         active_title_before=active_title_before,
         active_title_after=active_title_after,
+        target_title=target_title,
+        used_attach_thread_input=used_attach_thread_input,
+    )
+
+
+def _activate_window_direct(hwnd: int, *, active_title_before: str, target_title: str) -> ActivationResult:
+    return _run_activation_sequence(
+        hwnd,
+        active_title_before=active_title_before,
+        target_title=target_title,
+        success_status="activated",
+        mismatch_status="foreground_mismatch",
+        setforeground_failed_status="setforeground_failed",
+        used_attach_thread_input=False,
+    )
+
+
+def _activate_window_with_attach_thread_input(
+    hwnd: int,
+    *,
+    active_title_before: str,
+    target_title: str,
+) -> ActivationResult:
+    current_thread_id = _get_current_thread_id()
+    foreground_hwnd = _get_foreground_window_handle()
+    foreground_thread_id = _get_window_thread_id(foreground_hwnd)
+    target_thread_id = _get_window_thread_id(hwnd)
+    attached_pairs: list[tuple[int, int]] = []
+    try:
+        for source_thread_id, linked_thread_id in (
+            (current_thread_id, foreground_thread_id),
+            (current_thread_id, target_thread_id),
+        ):
+            ok, error_message = _attach_thread_input_pair(source_thread_id, linked_thread_id, True)
+            if not ok:
+                return ActivationResult(
+                    ok=False,
+                    status="attach_thread_input_failed",
+                    hwnd=hwnd,
+                    active_title_before=active_title_before,
+                    active_title_after=get_foreground_window_title(),
+                    target_title=target_title,
+                    error_message=error_message,
+                    used_attach_thread_input=True,
+                )
+            if source_thread_id > 0 and linked_thread_id > 0 and source_thread_id != linked_thread_id:
+                attached_pairs.append((source_thread_id, linked_thread_id))
+        return _run_activation_sequence(
+            hwnd,
+            active_title_before=active_title_before,
+            target_title=target_title,
+            success_status="activated_via_attach_thread_input",
+            mismatch_status="foreground_mismatch_after_attach_thread_input",
+            setforeground_failed_status="setforeground_failed_after_attach_thread_input",
+            used_attach_thread_input=True,
+        )
+    finally:
+        for source_thread_id, linked_thread_id in reversed(attached_pairs):
+            _attach_thread_input_pair(source_thread_id, linked_thread_id, False)
+
+
+def activate_window_result(hwnd: int) -> ActivationResult:
+    active_title_before = get_foreground_window_title()
+    target_title = _get_window_title(hwnd)
+    if not hwnd:
+        return ActivationResult(
+            ok=False,
+            status="window_not_found",
+            hwnd=None,
+            active_title_before=active_title_before,
+            active_title_after=active_title_before,
+        )
+    direct_result = _activate_window_direct(
+        hwnd,
+        active_title_before=active_title_before,
+        target_title=target_title,
+    )
+    if direct_result.ok or direct_result.status not in {"setforeground_failed", "foreground_mismatch"}:
+        return direct_result
+    return _activate_window_with_attach_thread_input(
+        hwnd,
+        active_title_before=active_title_before,
         target_title=target_title,
     )
 

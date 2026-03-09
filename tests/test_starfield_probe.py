@@ -63,23 +63,76 @@ class FakeReader:
         return value
 
 
-def _scene_image(*, ship_center=None, ship_size=(36, 18), objects=()):
+def _draw_ship(draw, *, cx, cy, size, fill=(245, 245, 245), glow=None):
+    ship_w, ship_h = size
+    body_w = max(10, int(round(ship_w * 0.46)))
+    body_h = max(8, int(round(ship_h * 0.62)))
+    pod_w = max(6, int(round(ship_w * 0.18)))
+    pod_h = max(8, int(round(ship_h * 0.56)))
+    draw.ellipse(
+        (cx - body_w // 2, cy - body_h // 2, cx + body_w // 2, cy + body_h // 2),
+        fill=fill,
+    )
+    draw.rectangle(
+        (cx - ship_w // 2, cy - pod_h // 2, cx - ship_w // 2 + pod_w, cy + pod_h // 2),
+        fill=fill,
+    )
+    draw.rectangle(
+        (cx + ship_w // 2 - pod_w, cy - pod_h // 2, cx + ship_w // 2, cy + pod_h // 2),
+        fill=fill,
+    )
+    draw.polygon(
+        (
+            (cx, cy + ship_h // 2),
+            (cx - max(4, ship_w // 8), cy + max(4, ship_h // 7)),
+            (cx + max(3, ship_w // 10), cy + max(1, ship_h // 10)),
+        ),
+        fill=fill,
+    )
+    if glow is not None:
+        draw.ellipse(
+            (cx - body_w // 2 - 2, cy - body_h // 2 - 2, cx + body_w // 2 + 2, cy + body_h // 2 + 2),
+            outline=glow,
+            width=2,
+        )
+
+
+def _scene_image(*, ship_center=None, ship_size=(36, 18), ship_style="ellipse", objects=()):
     image = Image.new("RGB", (320, 240), (4, 8, 16))
     from PIL import ImageDraw
 
     draw = ImageDraw.Draw(image)
     if ship_center is not None:
         cx, cy = ship_center
-        ship_w, ship_h = ship_size
-        draw.ellipse(
-            (cx - ship_w // 2, cy - ship_h // 2, cx + ship_w // 2, cy + ship_h // 2),
-            fill=(245, 245, 245),
-        )
+        if ship_style == "sprite":
+            _draw_ship(draw, cx=cx, cy=cy, size=ship_size)
+        else:
+            ship_w, ship_h = ship_size
+            draw.ellipse(
+                (cx - ship_w // 2, cy - ship_h // 2, cx + ship_w // 2, cy + ship_h // 2),
+                fill=(245, 245, 245),
+            )
     for cx, cy, radius in objects:
         draw.ellipse(
             (cx - radius, cy - radius, cx + radius, cy + radius),
             fill=(220, 240, 255),
         )
+    return image
+
+
+def _ship_template_image(size=(36, 18)):
+    image = Image.new("RGBA", size, (0, 0, 0, 0))
+    from PIL import ImageDraw
+
+    draw = ImageDraw.Draw(image)
+    _draw_ship(
+        draw,
+        cx=size[0] // 2,
+        cy=size[1] // 2,
+        size=size,
+        fill=(245, 245, 245, 255),
+        glow=(180, 255, 255, 255),
+    )
     return image
 
 
@@ -135,6 +188,33 @@ def test_starfield_probe_fails_closed_when_template_detection_misses_without_fal
     assert actions.calls == []
 
 
+def test_starfield_probe_fails_closed_when_template_rejected_and_heuristic_is_implausible():
+    actions = FakeActions()
+    result = try_open_nearest_starfield_candidate(
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), ship_size=(22, 8), objects=((270, 120, 12),))),
+        actions=actions,
+        reader=FakeReader(PlanetPanelState(planet_id=1, title="1. BALOR")),
+        panel_is_readable=_panel_is_readable,
+        settle_seconds=0.0,
+        ship_template_enabled=True,
+        ship_template_scales=(0.5,),
+        ship_template_threshold=0.5,
+        ship_template_use_edges=True,
+        ship_template_allow_fallback=True,
+        ship_template_min_scale=0.6,
+        heuristic_fallback_min_bbox_width=24,
+        heuristic_fallback_min_bbox_height=12,
+        heuristic_fallback_min_area=180,
+    )
+    assert result.ok is False
+    assert result.reason == "ship_missing"
+    assert result.scene is not None
+    assert result.scene.ship_center_x is None
+    assert result.scene.ship_detection_mode is None
+    assert result.scene.heuristic_detection_status == "rejected"
+    assert actions.calls == []
+
+
 def test_starfield_probe_can_fallback_when_template_search_region_misses():
     actions = FakeActions()
     result = try_open_nearest_starfield_candidate(
@@ -150,6 +230,70 @@ def test_starfield_probe_can_fallback_when_template_search_region_misses():
     assert result.ok is True
     assert result.reason == "open_confirmed"
     assert result.target_point == (270, 120)
+
+
+def test_starfield_probe_excluded_template_false_anchor_fails_closed():
+    actions = FakeActions()
+    result = try_open_nearest_starfield_candidate(
+        capture=FakeCapture(
+            _scene_image(
+                ship_center=(280, 120),
+                ship_size=(44, 16),
+                ship_style="sprite",
+            )
+        ),
+        actions=actions,
+        reader=FakeReader(PlanetPanelState(planet_id=1, title="1. BALOR")),
+        panel_is_readable=_panel_is_readable,
+        settle_seconds=0.0,
+        scene_viewport=(0.0, 0.0, 1.0, 1.0),
+        scene_exclusion_zones=((0.75, 0.0, 1.0, 1.0),),
+        ship_template_enabled=True,
+        ship_template_image=_ship_template_image((44, 16)),
+        ship_template_scales=(1.0,),
+        ship_template_use_edges=True,
+        ship_template_allow_fallback=False,
+    )
+    assert result.ok is False
+    assert result.reason == "ship_missing"
+    assert result.scene is not None
+    assert result.scene.ship_center_x is None
+    assert actions.calls == []
+
+
+def test_starfield_probe_uses_allowed_template_roi_when_excluded_false_anchor_exists():
+    actions = FakeActions()
+    image = _scene_image(
+        ship_center=(160, 120),
+        ship_size=(44, 16),
+        ship_style="sprite",
+        objects=((160, 235, 12),),
+    )
+    from PIL import ImageDraw
+
+    _draw_ship(ImageDraw.Draw(image), cx=280, cy=120, size=(44, 16))
+    result = try_open_nearest_starfield_candidate(
+        capture=FakeCapture(image),
+        actions=actions,
+        reader=FakeReader(PlanetPanelState(planet_id=1, title="1. BALOR")),
+        panel_is_readable=_panel_is_readable,
+        settle_seconds=0.0,
+        scene_viewport=(0.0, 0.0, 1.0, 1.0),
+        scene_exclusion_zones=((0.75, 0.0, 1.0, 1.0),),
+        ship_template_enabled=True,
+        ship_template_image=_ship_template_image((44, 16)),
+        ship_template_scales=(1.0,),
+        ship_template_use_edges=True,
+        ship_template_allow_fallback=False,
+    )
+    assert result.ok is True
+    assert result.reason == "open_confirmed"
+    assert result.scene is not None
+    assert result.scene.ship_detection_mode == "template"
+    assert abs(result.scene.ship_center_x - 160) <= 3
+    assert abs(result.scene.ship_center_y - 120) <= 3
+    assert result.target_point == (160, 232)
+    assert actions.calls == [("click_client_point", (160, 232), 0.0)]
 
 
 def test_starfield_probe_fails_closed_when_not_starfield_ready():

@@ -10,6 +10,7 @@ from PIL import Image
 
 
 _DEFAULT_TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "assets" / "ship_template.png"
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 @dataclass(slots=True, frozen=True)
@@ -67,9 +68,22 @@ def _prepare_template(image: Image.Image) -> _PreparedTemplate:
     return _PreparedTemplate(gray=gray, edge=edge, mask=mask, area=area)
 
 
+def _resolve_template_path(path: str) -> Path:
+    candidate = Path(path)
+    if candidate.is_absolute():
+        return candidate
+    project_relative = (_PROJECT_ROOT / candidate).resolve()
+    if project_relative.exists():
+        return project_relative
+    cwd_relative = candidate.resolve()
+    if cwd_relative.exists():
+        return cwd_relative
+    return project_relative
+
+
 @lru_cache(maxsize=8)
 def _load_template_from_path(path: str) -> _PreparedTemplate | None:
-    template_path = Path(path)
+    template_path = _resolve_template_path(path)
     if not template_path.exists():
         return None
     try:
@@ -101,12 +115,62 @@ def _normalize_search_region(
     return (left, top, right, bottom)
 
 
+def _normalize_allowed_mask(
+    allowed_mask: np.ndarray | None,
+    *,
+    image_size: tuple[int, int],
+) -> np.ndarray | None:
+    if allowed_mask is None:
+        return None
+    mask = np.asarray(allowed_mask, dtype=bool)
+    width, height = image_size
+    if mask.ndim != 2 or mask.shape != (height, width):
+        return None
+    if not bool(np.any(mask)):
+        return None
+    return mask
+
+
+def _window_sums(mask: np.ndarray, *, window_width: int, window_height: int) -> np.ndarray:
+    integral = np.pad(mask.astype(np.int32), ((1, 0), (1, 0)), mode="constant")
+    integral = integral.cumsum(axis=0).cumsum(axis=1)
+    return (
+        integral[window_height:, window_width:]
+        - integral[:-window_height, window_width:]
+        - integral[window_height:, :-window_width]
+        + integral[:-window_height, :-window_width]
+    )
+
+
+def _best_valid_match(
+    result: np.ndarray,
+    *,
+    valid_positions: np.ndarray | None,
+) -> tuple[float, tuple[int, int]] | None:
+    score_grid = np.asarray(result, dtype=np.float32)
+    if score_grid.ndim != 2:
+        return None
+    if valid_positions is not None:
+        if valid_positions.shape != score_grid.shape or not bool(np.any(valid_positions)):
+            return None
+        score_grid = score_grid.copy()
+        score_grid[~valid_positions] = np.inf
+    finite_positions = np.isfinite(score_grid)
+    if not bool(np.any(finite_positions)):
+        return None
+    flat_index = int(np.argmin(score_grid))
+    width = int(score_grid.shape[1])
+    min_val = float(score_grid.flat[flat_index])
+    return min_val, (flat_index % width, flat_index // width)
+
+
 def detect_ship_template(
     image: Image.Image,
     *,
     template_path: str | None = None,
     template_image: Image.Image | None = None,
     search_region: tuple[int, int, int, int] | None = None,
+    allowed_mask: np.ndarray | None = None,
     scales: tuple[float, ...] = (0.12, 0.14, 0.16, 0.18, 0.20, 0.22, 0.25),
     threshold: float = 0.55,
     use_edges: bool = True,
@@ -125,14 +189,26 @@ def detect_ship_template(
     normalized_search_region = _normalize_search_region(search_region, image_size=image.size)
     if search_region is not None and normalized_search_region is None:
         return ShipTemplateDetection(status="search_region_invalid")
+    normalized_allowed_mask = _normalize_allowed_mask(allowed_mask, image_size=image.size)
+    if allowed_mask is not None and normalized_allowed_mask is None:
+        return ShipTemplateDetection(status="allowed_region_invalid")
     if normalized_search_region is not None:
         offset_left, offset_top, offset_right, offset_bottom = normalized_search_region
         working_image = image.crop((offset_left, offset_top, offset_right, offset_bottom))
+        working_allowed_mask = (
+            normalized_allowed_mask[offset_top:offset_bottom, offset_left:offset_right]
+            if normalized_allowed_mask is not None
+            else None
+        )
     else:
         offset_left = 0
         offset_top = 0
         working_image = image
+        working_allowed_mask = normalized_allowed_mask
     scene_gray = _as_gray(working_image)
+    if working_allowed_mask is not None:
+        if working_allowed_mask.shape != scene_gray.shape or not bool(np.any(working_allowed_mask)):
+            return ShipTemplateDetection(status="allowed_region_invalid")
     scene_edge = _as_edge(scene_gray)
     best_score: float | None = None
     best_scale: float | None = None
@@ -152,14 +228,29 @@ def detect_ship_template(
         mask = cv2.resize(prepared.mask, (tpl_w, tpl_h), interpolation=cv2.INTER_NEAREST)
         if int(np.count_nonzero(mask)) < 24:
             continue
+        valid_positions = None
+        if working_allowed_mask is not None:
+            valid_positions = _window_sums(
+                working_allowed_mask,
+                window_width=tpl_w,
+                window_height=tpl_h,
+            ) == (tpl_w * tpl_h)
+            if not bool(np.any(valid_positions)):
+                continue
         template_work = edge if use_edges else gray
         scene_work = scene_edge if use_edges else scene_gray
         result = cv2.matchTemplate(scene_work, template_work, cv2.TM_SQDIFF_NORMED, mask=mask)
-        min_val, _max_val, min_loc, _max_loc = cv2.minMaxLoc(result)
+        best_valid = _best_valid_match(result, valid_positions=valid_positions)
+        if best_valid is None:
+            continue
+        min_val, min_loc = best_valid
         score = 1.0 - float(min_val) if np.isfinite(min_val) else float("nan")
         if (not np.isfinite(min_val)) or (not np.isfinite(score)) or score < 0.0 or score > 1.0:
             result = cv2.matchTemplate(scene_gray, gray, cv2.TM_SQDIFF_NORMED, mask=mask)
-            min_val, _max_val, min_loc, _max_loc = cv2.minMaxLoc(result)
+            best_valid = _best_valid_match(result, valid_positions=valid_positions)
+            if best_valid is None:
+                continue
+            min_val, min_loc = best_valid
             score = 1.0 - float(min_val) if np.isfinite(min_val) else float("nan")
         if (not np.isfinite(min_val)) or (not np.isfinite(score)) or score < 0.0 or score > 1.0:
             continue

@@ -6,6 +6,7 @@ from ipm.starfield_scene import (
     StarfieldScene,
     detect_starfield_scene,
     format_ship_detection_debug,
+    format_ship_detection_followup_debug,
     format_starfield_scene_debug,
     get_ranked_planet_candidates,
     select_nearest_candidate,
@@ -212,11 +213,38 @@ def test_detect_starfield_scene_can_fallback_after_template_rejection():
         ship_template_use_edges=True,
         ship_template_allow_fallback=True,
         ship_template_min_scale=0.6,
+        heuristic_fallback_min_bbox_width=20,
+        heuristic_fallback_min_bbox_height=8,
+        heuristic_fallback_min_area=150,
     )
     assert scene.ship_center_x is not None
     assert scene.ship_detection_mode == "heuristic"
     assert scene.ship_template_status == "rejected"
     assert scene.ship_template_reject_reason == "min_scale"
+
+
+def test_detect_starfield_scene_rejects_implausible_heuristic_fallback_after_template_rejection():
+    scene = detect_starfield_scene(
+        _scene_image(ship_center=(160, 120), ship_size=(22, 8), ship_style="sprite"),
+        ship_template_enabled=True,
+        ship_template_image=_ship_template_image((44, 16)),
+        ship_template_scales=(0.5,),
+        ship_template_threshold=0.5,
+        ship_template_use_edges=True,
+        ship_template_allow_fallback=True,
+        ship_template_min_scale=0.6,
+        heuristic_fallback_min_bbox_width=24,
+        heuristic_fallback_min_bbox_height=12,
+        heuristic_fallback_min_area=180,
+    )
+    assert scene.ship_center_x is None
+    assert scene.ship_center_y is None
+    assert scene.ship_detection_mode is None
+    assert scene.ship_reject_reason is None
+    assert scene.ship_template_status == "rejected"
+    assert scene.ship_template_reject_reason == "min_scale"
+    assert scene.heuristic_detection_status == "rejected"
+    assert scene.heuristic_reject_reason in {"min_bbox_width", "min_bbox_height", "min_area"}
 
 
 def test_detect_starfield_scene_returns_no_anchor_when_template_rejects_and_fallback_fails():
@@ -250,6 +278,68 @@ def test_detect_starfield_scene_search_margins_exclude_edge_false_anchor():
     assert scene.ship_center_x is None
     assert scene.ship_detection_mode is None
     assert scene.ship_template_status in {"below_threshold", "not_found"}
+
+
+def test_detect_starfield_scene_rejects_template_match_inside_excluded_zone():
+    image = _scene_image(ship_center=(280, 120), ship_size=(44, 16), ship_style="sprite")
+    scene = detect_starfield_scene(
+        image,
+        viewport=(0, 0, 320, 240),
+        exclusion_zones=((240, 0, 320, 240),),
+        ship_template_enabled=True,
+        ship_template_image=_ship_template_image((44, 16)),
+        ship_template_scales=(1.0,),
+        ship_template_use_edges=True,
+        ship_template_allow_fallback=False,
+    )
+    assert scene.ship_center_x is None
+    assert scene.ship_center_y is None
+    assert scene.ship_detection_mode is None
+    assert scene.ship_template_status in {"below_threshold", "not_found"}
+
+
+def test_detect_starfield_scene_template_match_uses_allowed_roi_when_excluded_false_anchor_exists():
+    image = _scene_image(
+        ship_center=(160, 120),
+        ship_size=(44, 16),
+        ship_style="sprite",
+    )
+    draw = ImageDraw.Draw(image)
+    _draw_ship(draw, cx=280, cy=120, size=(44, 16))
+    scene = detect_starfield_scene(
+        image,
+        viewport=(0, 0, 320, 240),
+        exclusion_zones=((240, 0, 320, 240),),
+        ship_template_enabled=True,
+        ship_template_image=_ship_template_image((44, 16)),
+        ship_template_scales=(1.0,),
+        ship_template_use_edges=True,
+        ship_template_allow_fallback=False,
+    )
+    assert scene.ship_detection_mode == "template"
+    assert scene.ship_template_status == "match"
+    assert scene.ship_bbox is not None
+    assert abs(scene.ship_center_x - 160) <= 3
+    assert abs(scene.ship_center_y - 120) <= 3
+    assert scene.ship_bbox[2] <= 240
+
+
+def test_detect_starfield_scene_fails_closed_when_allowed_template_roi_is_empty():
+    image = _scene_image(ship_center=(160, 120), ship_size=(44, 16), ship_style="sprite")
+    scene = detect_starfield_scene(
+        image,
+        viewport=(0, 0, 320, 240),
+        exclusion_zones=((0, 0, 320, 240),),
+        ship_template_enabled=True,
+        ship_template_image=_ship_template_image((44, 16)),
+        ship_template_scales=(1.0,),
+        ship_template_use_edges=True,
+        ship_template_allow_fallback=False,
+    )
+    assert scene.ship_center_x is None
+    assert scene.ship_center_y is None
+    assert scene.ship_detection_mode is None
+    assert scene.ship_template_status == "allowed_region_invalid"
 
 
 def test_detect_starfield_scene_finds_ship_and_ranks_objects_nearest_first():
@@ -578,3 +668,53 @@ def test_format_ship_detection_debug_reports_template_rejection():
     )
     text = format_ship_detection_debug(scene)
     assert text == "[SHIP_DETECT] raw=0.93 scale=0.08 bbox=18x23 rejected=min_width fallback=heuristic"
+
+
+def test_format_ship_detection_followup_debug_reports_heuristic_acceptance():
+    scene = StarfieldScene(
+        ship_center_x=160,
+        ship_center_y=120,
+        ship_radius=22,
+        ship_bbox=(138, 112, 182, 128),
+        ship_area=500,
+        ship_reject_reason=None,
+        objects=(),
+        ship_detection_mode="heuristic",
+        ship_template_status="rejected",
+        ship_match_score=0.93,
+        ship_match_scale=0.08,
+        ship_template_reject_reason="min_width",
+        ship_template_raw_bbox=(334, 479, 352, 502),
+        heuristic_detection_status="accepted",
+        heuristic_raw_bbox=(138, 112, 182, 128),
+        heuristic_raw_area=500,
+    )
+    lines = format_ship_detection_followup_debug(scene)
+    assert lines == ("[SHIP_DETECT] heuristic=accepted bbox=44x16 a=500 center=(160,120)",)
+
+
+def test_format_ship_detection_followup_debug_reports_heuristic_rejection_and_no_accepted_ship():
+    scene = StarfieldScene(
+        ship_center_x=None,
+        ship_center_y=None,
+        ship_radius=None,
+        ship_bbox=None,
+        ship_area=None,
+        ship_reject_reason=None,
+        objects=(),
+        ship_detection_mode=None,
+        ship_template_status="rejected",
+        ship_match_score=0.92,
+        ship_match_scale=0.08,
+        ship_template_reject_reason="min_scale",
+        ship_template_raw_bbox=(334, 479, 352, 502),
+        heuristic_detection_status="rejected",
+        heuristic_reject_reason="min_bbox_width",
+        heuristic_raw_bbox=(474, 318, 476, 334),
+        heuristic_raw_area=31,
+    )
+    lines = format_ship_detection_followup_debug(scene)
+    assert lines == (
+        "[SHIP_DETECT] heuristic=rejected reason=min_bbox_width bbox=2x16 a=31",
+        "[SHIP_DETECT] result=no_accepted_ship",
+    )

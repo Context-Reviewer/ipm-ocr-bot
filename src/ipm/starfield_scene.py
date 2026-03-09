@@ -204,6 +204,16 @@ def _apply_exclusion_zones(
     return filtered
 
 
+def _build_allowed_template_mask(
+    *,
+    image_size: tuple[int, int],
+    exclusion_zones: tuple[tuple[int, int, int, int], ...],
+) -> np.ndarray:
+    width, height = image_size
+    mask = np.ones((height, width), dtype=bool)
+    return _apply_exclusion_zones(mask, exclusion_zones)
+
+
 def _detect_ship(components: list[_Component], *, image_size: tuple[int, int]) -> _Component | None:
     candidates = [
         component
@@ -402,6 +412,10 @@ def detect_starfield_scene(
     heuristic_reject_reason: str | None = None
     heuristic_raw_ship: _Component | None = None
     if ship_template_enabled:
+        template_allowed_mask = _build_allowed_template_mask(
+            image_size=working_image.size,
+            exclusion_zones=normalized_exclusion_zones,
+        )
         template_search_region = _normalize_search_region_margins(
             image_size=working_image.size,
             left_margin=ship_template_search_left_margin,
@@ -414,6 +428,7 @@ def detect_starfield_scene(
             template_path=ship_template_path,
             template_image=ship_template_image,
             search_region=template_search_region,
+            allowed_mask=template_allowed_mask,
             scales=ship_template_scales,
             threshold=ship_template_threshold,
             use_edges=ship_template_use_edges,

@@ -167,6 +167,24 @@ def _normalize_exclusion_zones(
     return tuple(normalized)
 
 
+def _normalize_search_region_margins(
+    *,
+    image_size: tuple[int, int],
+    left_margin: int,
+    top_margin: int,
+    right_margin: int,
+    bottom_margin: int,
+) -> tuple[int, int, int, int] | None:
+    width, height = image_size
+    left = max(0, int(left_margin))
+    top = max(0, int(top_margin))
+    right = max(left + 1, width - max(0, int(right_margin)))
+    bottom = max(top + 1, height - max(0, int(bottom_margin)))
+    if right - left < 2 or bottom - top < 2:
+        return None
+    return (left, top, right, bottom)
+
+
 def _apply_exclusion_zones(
     mask: np.ndarray,
     exclusion_zones: tuple[tuple[int, int, int, int], ...],
@@ -320,6 +338,10 @@ def detect_starfield_scene(
     ship_template_use_edges: bool = True,
     ship_template_allow_fallback: bool = True,
     ship_template_image: Image.Image | None = None,
+    ship_template_search_left_margin: int = 0,
+    ship_template_search_top_margin: int = 0,
+    ship_template_search_right_margin: int = 0,
+    ship_template_search_bottom_margin: int = 0,
     candidate_min_area: int = 80,
     candidate_min_radius: int = 6,
     ship_exclusion_margin: int = 14,
@@ -346,10 +368,18 @@ def detect_starfield_scene(
     detected_ship: _Component | None = None
     ship_detection_mode: str | None = None
     if ship_template_enabled:
+        template_search_region = _normalize_search_region_margins(
+            image_size=working_image.size,
+            left_margin=ship_template_search_left_margin,
+            top_margin=ship_template_search_top_margin,
+            right_margin=ship_template_search_right_margin,
+            bottom_margin=ship_template_search_bottom_margin,
+        )
         template_detection = detect_ship_template(
             working_image,
             template_path=ship_template_path,
             template_image=ship_template_image,
+            search_region=template_search_region,
             scales=ship_template_scales,
             threshold=ship_template_threshold,
             use_edges=ship_template_use_edges,

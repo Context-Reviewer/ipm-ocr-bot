@@ -136,6 +136,10 @@ class PlanetsTask:
                 ship_template_threshold=float(getattr(self.config.starfield, "ship_template_threshold", 0.55)),
                 ship_template_use_edges=bool(getattr(self.config.starfield, "ship_template_use_edges", True)),
                 ship_template_allow_fallback=bool(getattr(self.config.starfield, "ship_template_allow_fallback", True)),
+                ship_template_search_left_margin=int(getattr(self.config.starfield, "ship_template_search_left_margin", 0)),
+                ship_template_search_top_margin=int(getattr(self.config.starfield, "ship_template_search_top_margin", 0)),
+                ship_template_search_right_margin=int(getattr(self.config.starfield, "ship_template_search_right_margin", 0)),
+                ship_template_search_bottom_margin=int(getattr(self.config.starfield, "ship_template_search_bottom_margin", 0)),
                 ship_exclusion_margin=int(getattr(self.config.starfield, "ship_exclusion_margin", 14)),
                 ship_cluster_exclusion_x_margin=int(
                     getattr(self.config.starfield, "ship_cluster_exclusion_x_margin", 60)

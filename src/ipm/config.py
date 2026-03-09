@@ -109,6 +109,10 @@ class StarfieldConfig:
     ship_template_scales: tuple[float, ...] = (1.0, 0.75, 0.5, 0.35, 0.25, 0.18, 0.12, 0.08)
     ship_template_use_edges: bool = True
     ship_template_allow_fallback: bool = True
+    ship_template_search_left_margin: int = 16
+    ship_template_search_top_margin: int = 12
+    ship_template_search_right_margin: int = 112
+    ship_template_search_bottom_margin: int = 16
     scene_viewport: tuple[float, float, float, float] = (0.08, 0.12, 0.88, 0.94)
     scene_exclusion_zones: tuple[tuple[float, float, float, float], ...] = (
         (0.0, 0.0, 1.0, 0.08),

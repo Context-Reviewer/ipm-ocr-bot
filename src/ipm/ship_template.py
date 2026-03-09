@@ -81,11 +81,30 @@ def default_ship_template_path() -> str:
     return str(_DEFAULT_TEMPLATE_PATH)
 
 
+def _normalize_search_region(
+    search_region: tuple[int, int, int, int] | None,
+    *,
+    image_size: tuple[int, int],
+) -> tuple[int, int, int, int] | None:
+    if search_region is None:
+        return None
+    width, height = image_size
+    left, top, right, bottom = (int(value) for value in search_region)
+    left = max(0, min(left, width - 1))
+    top = max(0, min(top, height - 1))
+    right = max(left + 1, min(right, width))
+    bottom = max(top + 1, min(bottom, height))
+    if right - left < 2 or bottom - top < 2:
+        return None
+    return (left, top, right, bottom)
+
+
 def detect_ship_template(
     image: Image.Image,
     *,
     template_path: str | None = None,
     template_image: Image.Image | None = None,
+    search_region: tuple[int, int, int, int] | None = None,
     scales: tuple[float, ...] = (1.0, 0.75, 0.5, 0.35, 0.25, 0.18, 0.12, 0.08),
     threshold: float = 0.55,
     use_edges: bool = True,
@@ -97,7 +116,17 @@ def detect_ship_template(
     )
     if prepared is None:
         return ShipTemplateDetection(status="template_missing")
-    scene_gray = _as_gray(image)
+    normalized_search_region = _normalize_search_region(search_region, image_size=image.size)
+    if search_region is not None and normalized_search_region is None:
+        return ShipTemplateDetection(status="search_region_invalid")
+    if normalized_search_region is not None:
+        offset_left, offset_top, offset_right, offset_bottom = normalized_search_region
+        working_image = image.crop((offset_left, offset_top, offset_right, offset_bottom))
+    else:
+        offset_left = 0
+        offset_top = 0
+        working_image = image
+    scene_gray = _as_gray(working_image)
     scene_edge = _as_edge(scene_gray)
     best_score: float | None = None
     best_scale: float | None = None
@@ -121,20 +150,26 @@ def detect_ship_template(
         scene_work = scene_edge if use_edges else scene_gray
         result = cv2.matchTemplate(scene_work, template_work, cv2.TM_SQDIFF_NORMED, mask=mask)
         min_val, _max_val, min_loc, _max_loc = cv2.minMaxLoc(result)
-        if not np.isfinite(min_val):
+        score = 1.0 - float(min_val) if np.isfinite(min_val) else float("nan")
+        if (not np.isfinite(min_val)) or (not np.isfinite(score)) or score < 0.0 or score > 1.0:
             result = cv2.matchTemplate(scene_gray, gray, cv2.TM_SQDIFF_NORMED, mask=mask)
             min_val, _max_val, min_loc, _max_loc = cv2.minMaxLoc(result)
-        if not np.isfinite(min_val):
+            score = 1.0 - float(min_val) if np.isfinite(min_val) else float("nan")
+        if (not np.isfinite(min_val)) or (not np.isfinite(score)) or score < 0.0 or score > 1.0:
             continue
-        score = 1.0 - float(min_val)
         if best_score is None or score > best_score:
             best_score = score
             best_scale = float(scale)
             left, top = int(min_loc[0]), int(min_loc[1])
-            bbox = (left, top, left + tpl_w, top + tpl_h)
+            bbox = (
+                left + offset_left,
+                top + offset_top,
+                left + tpl_w + offset_left,
+                top + tpl_h + offset_top,
+            )
             best_match = ShipTemplateMatch(
-                center_x=left + int(round(tpl_w / 2.0)),
-                center_y=top + int(round(tpl_h / 2.0)),
+                center_x=left + int(round(tpl_w / 2.0)) + offset_left,
+                center_y=top + int(round(tpl_h / 2.0)) + offset_top,
                 bbox=bbox,
                 width=tpl_w,
                 height=tpl_h,

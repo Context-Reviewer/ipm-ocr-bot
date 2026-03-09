@@ -111,6 +111,22 @@ def test_detect_ship_template_supports_multi_scale_matching():
     assert detection.best_scale in {0.5, 0.35, 0.25}
 
 
+def test_detect_ship_template_translates_coordinates_from_search_region():
+    scene = _scene_image(ship_center=(160, 120), ship_size=(44, 16), ship_style="sprite")
+    detection = detect_ship_template(
+        scene,
+        template_image=_ship_template_image((44, 16)),
+        search_region=(120, 80, 220, 180),
+        scales=(1.0,),
+        threshold=0.2,
+        use_edges=True,
+    )
+    assert detection.status == "match"
+    assert detection.match is not None
+    assert abs(detection.match.center_x - 160) <= 3
+    assert abs(detection.match.center_y - 120) <= 3
+
+
 def test_detect_ship_template_fails_cleanly_below_threshold():
     scene = _scene_image()
     detection = detect_ship_template(
@@ -118,6 +134,20 @@ def test_detect_ship_template_fails_cleanly_below_threshold():
         template_image=_ship_template_image((44, 16)),
         scales=(1.0,),
         threshold=0.80,
+        use_edges=True,
+    )
+    assert detection.status in {"below_threshold", "not_found"}
+    assert detection.match is None
+
+
+def test_detect_ship_template_ignores_false_positive_outside_search_region():
+    scene = _scene_image(ship_center=(280, 120), ship_size=(44, 16), ship_style="sprite")
+    detection = detect_ship_template(
+        scene,
+        template_image=_ship_template_image((44, 16)),
+        search_region=(0, 0, 200, 240),
+        scales=(1.0,),
+        threshold=0.5,
         use_edges=True,
     )
     assert detection.status in {"below_threshold", "not_found"}
@@ -136,6 +166,22 @@ def test_detect_starfield_scene_can_fallback_to_heuristic_when_template_misses()
     )
     assert scene.ship_center_x is not None
     assert scene.ship_detection_mode == "heuristic"
+    assert scene.ship_template_status in {"below_threshold", "not_found"}
+
+
+def test_detect_starfield_scene_search_margins_exclude_edge_false_anchor():
+    image = _scene_image(ship_center=(280, 120), ship_size=(44, 16), ship_style="sprite")
+    scene = detect_starfield_scene(
+        image,
+        ship_template_enabled=True,
+        ship_template_image=_ship_template_image((44, 16)),
+        ship_template_scales=(1.0,),
+        ship_template_use_edges=True,
+        ship_template_allow_fallback=False,
+        ship_template_search_right_margin=140,
+    )
+    assert scene.ship_center_x is None
+    assert scene.ship_detection_mode is None
     assert scene.ship_template_status in {"below_threshold", "not_found"}
 
 

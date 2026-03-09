@@ -415,6 +415,13 @@ class Application:
         point = (32, min(96, max(0, image.height - 24)))
         return click_point(point, delay=self.config.actions.menu_delay_seconds)
 
+    def _reset_ui_recovery(self) -> bool:
+        reset_ui = getattr(self.actions, "reset_ui", None)
+        if not callable(reset_ui):
+            return False
+        reset_ui()
+        return True
+
     def _recover_starfield(self, *, stage: str, image: Image.Image) -> tuple[bool, Image.Image | None]:
         state_check = self._evaluate_ui_state(image)
         self._log_ui_state(f"{stage}_check", state_check)
@@ -436,6 +443,8 @@ class Application:
                 ]
             )
         attempts.append(("safe_dismiss", lambda: self._click_safe_dismiss(image)))
+        if state_check.state == "overlay_present":
+            attempts.append(("reset_ui", self._reset_ui_recovery))
 
         for attempt_name, attempt_action in attempts:
             clicked = bool(attempt_action())

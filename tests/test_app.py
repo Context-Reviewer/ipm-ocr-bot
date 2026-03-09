@@ -23,6 +23,9 @@ class RecordingActions:
         self.calls.append(("click_client_point", point, delay))
         return True
 
+    def reset_ui(self) -> None:
+        self.calls.append(("reset_ui",))
+
 
 def _make_app(tmp_path) -> Application:
     app = Application.__new__(Application)
@@ -164,9 +167,28 @@ def test_recover_starfield_succeeds_on_expanded_close_fallback(tmp_path):
     assert len(expanded_clicks) == 4
 
 
-def test_recover_starfield_overlay_uses_safe_dismiss_and_stays_fail_closed(tmp_path):
+def test_recover_starfield_overlay_tries_reset_ui_after_safe_dismiss(tmp_path):
     app = _make_app(tmp_path)
-    frames = iter([_overlay_image()])
+    frames = iter([_overlay_image(), _starfield_image()])
+    original_capture = Application._capture_frame
+    Application._capture_frame = lambda self: next(frames)  # type: ignore[assignment]
+
+    try:
+        ok, frame = app._recover_starfield(stage="pre_run", image=_overlay_image())
+    finally:
+        Application._capture_frame = original_capture  # type: ignore[assignment]
+
+    assert ok is True
+    assert frame is not None
+    assert app.actions.calls == [
+        ("click_client_point", (32, 96), app.config.actions.menu_delay_seconds),
+        ("reset_ui",),
+    ]
+
+
+def test_recover_starfield_overlay_uses_safe_dismiss_then_reset_ui_and_stays_fail_closed(tmp_path):
+    app = _make_app(tmp_path)
+    frames = iter([_overlay_image(), _overlay_image()])
     original_capture = Application._capture_frame
     Application._capture_frame = lambda self: next(frames)  # type: ignore[assignment]
 
@@ -177,7 +199,10 @@ def test_recover_starfield_overlay_uses_safe_dismiss_and_stays_fail_closed(tmp_p
 
     assert ok is False
     assert frame is None
-    assert app.actions.calls == [("click_client_point", (32, 96), app.config.actions.menu_delay_seconds)]
+    assert app.actions.calls == [
+        ("click_client_point", (32, 96), app.config.actions.menu_delay_seconds),
+        ("reset_ui",),
+    ]
 
 
 def test_run_discovery_recovers_before_proceeding(monkeypatch, tmp_path):
@@ -218,7 +243,7 @@ def test_run_discovery_recovers_before_proceeding(monkeypatch, tmp_path):
 
 def test_run_discovery_fails_closed_when_overlay_not_dismissed(monkeypatch, tmp_path):
     app = _make_app(tmp_path)
-    frames = iter([_overlay_image(), _overlay_image()])
+    frames = iter([_overlay_image(), _overlay_image(), _overlay_image()])
     monkeypatch.setattr(app_module, "ensure_focus", lambda focus: True)
     monkeypatch.setattr(Application, "_capture_frame", lambda self: next(frames))
 

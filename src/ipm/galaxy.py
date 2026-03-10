@@ -92,20 +92,22 @@ class PlanetNavigator:
         order: list[int],
         known_planets: dict[int, PlanetPanelState] | None,
         target_id: int,
-    ) -> tuple[bool, int]:
+    ) -> tuple[bool, int, PlanetPanelState | None]:
         moved_steps = 0
+        final_panel = None
         for _ in range(steps):
             moved = self.step(direction)
             if moved is None:
-                return False, moved_steps
+                return False, moved_steps, final_panel
             moved_steps += 1
-        final = self.current()
+            final_panel = moved
+        final = final_panel if final_panel is not None else self.current()
         final_id = self._resolve_current_id(final, order, known_planets)
-        return final_id == target_id, moved_steps
+        return final_id == target_id, moved_steps, final
 
-    def scan_visible_planets(self) -> GalaxyScan:
+    def scan_visible_planets(self, initial_panel: PlanetPanelState | None = None) -> GalaxyScan:
         scan = GalaxyScan()
-        first = self.current()
+        first = initial_panel if initial_panel is not None else self.current()
         if first.planet_id is None:
             return scan
         scan.planets[first.planet_id] = first
@@ -186,10 +188,11 @@ class PlanetNavigator:
         target_id: int,
         order: list[int],
         known_planets: dict[int, PlanetPanelState] | None = None,
+        current_panel: PlanetPanelState | None = None,
     ) -> bool:
         if target_id not in order:
             return False
-        current = self.current()
+        current = current_panel if current_panel is not None else self.current()
         current_id = self._resolve_current_id(current, order, known_planets)
         if current_id is None:
             for _ in range(len(order)):
@@ -211,7 +214,7 @@ class PlanetNavigator:
         else:
             primary = (-1, backward)
             alternate = (1, forward)
-        success, moved_steps = self._follow_route(
+        success, moved_steps, _final_panel = self._follow_route(
             direction=primary[0],
             steps=primary[1],
             order=order,
@@ -222,15 +225,16 @@ class PlanetNavigator:
             return True
         if alternate[1] == primary[1] and alternate[0] == primary[0]:
             return False
+        restored_panel = current
         for _ in range(moved_steps):
             restored = self.step(-primary[0])
             if restored is None:
                 return False
-        restored_panel = self.current()
+            restored_panel = restored
         restored_id = self._resolve_current_id(restored_panel, order, known_planets)
         if restored_id != current_id:
             return False
-        success, _moved_steps = self._follow_route(
+        success, _moved_steps, _final_panel = self._follow_route(
             direction=alternate[0],
             steps=alternate[1],
             order=order,

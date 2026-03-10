@@ -14,8 +14,10 @@ class FakeReader:
     def __init__(self, panels):
         self.panels = list(panels)
         self.index = 0
+        self.read_calls = 0
 
     def read(self):
+        self.read_calls += 1
         value = self.panels[min(self.index, len(self.panels) - 1)]
         self.index += 1
         return value
@@ -61,14 +63,21 @@ def test_go_to_planet_uses_title_name_when_numeric_id_is_wrong():
         3: PlanetPanelState(planet_id=3, title="3. ANADIUS"),
         4: PlanetPanelState(planet_id=4, title="4. ACHERON"),
     }
-    reader = FakeReader(
-        [
-            PlanetPanelState(planet_id=3, title="3. ACHERON"),
-            PlanetPanelState(planet_id=2, title="2. DRASTA"),
-            PlanetPanelState(planet_id=1, title="1. BALOR"),
-        ]
-    )
-    assert PlanetNavigator(reader, FakeActions(), max_planets=4).go_to_planet(1, [1, 2, 3, 4], known) is True
+    world = type(
+        "World",
+        (),
+        {
+            "panels": [
+                PlanetPanelState(planet_id=3, title="3. ACHERON"),
+                PlanetPanelState(planet_id=1, title="1. BALOR"),
+                PlanetPanelState(planet_id=2, title="2. DRASTA"),
+                PlanetPanelState(planet_id=3, title="3. ANADIUS"),
+            ],
+            "index": 0,
+        },
+    )()
+    navigator = PlanetNavigator(CycleReader(world), CycleActions(world), max_planets=4)
+    assert navigator.go_to_planet(1, [1, 2, 3, 4], known) is True
 
 
 def test_scan_normalizes_zero_id_to_expected_next_planet():
@@ -145,3 +154,40 @@ def test_go_to_planet_uses_alternate_direction_for_truncated_live_order():
     assert navigator.go_to_planet(5, order, known) is True
     assert navigator.current().planet_id == 5
     assert navigator.current().title == "VERR"
+
+
+def test_scan_visible_planets_can_reuse_initial_panel_without_extra_current_read():
+    first = PlanetPanelState(planet_id=1, title="1. BALOR")
+    reader = FakeReader(
+        [
+            PlanetPanelState(planet_id=2, title="2. DRASTA"),
+            PlanetPanelState(planet_id=3, title="3. ANADIUS"),
+            PlanetPanelState(planet_id=1, title="1. BALOR"),
+        ]
+    )
+    scan = PlanetNavigator(reader, FakeActions(), max_planets=4).scan_visible_planets(initial_panel=first)
+    assert scan.order == [1, 2, 3]
+    assert reader.read_calls == 4
+
+
+def test_go_to_planet_can_reuse_current_panel_without_initial_read():
+    known = {
+        1: PlanetPanelState(planet_id=1, title="1. BALOR"),
+        2: PlanetPanelState(planet_id=2, title="2. DRASTA"),
+        3: PlanetPanelState(planet_id=3, title="3. ANADIUS"),
+        4: PlanetPanelState(planet_id=4, title="4. ACHERON"),
+    }
+    reader = FakeReader(
+        [
+            PlanetPanelState(planet_id=2, title="2. DRASTA"),
+            PlanetPanelState(planet_id=1, title="1. BALOR"),
+        ]
+    )
+    navigator = PlanetNavigator(reader, FakeActions(), max_planets=4)
+    assert navigator.go_to_planet(
+        1,
+        [1, 2, 3, 4],
+        known,
+        current_panel=PlanetPanelState(planet_id=3, title="3. ANADIUS"),
+    ) is True
+    assert reader.read_calls == 2

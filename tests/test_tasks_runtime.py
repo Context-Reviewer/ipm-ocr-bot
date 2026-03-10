@@ -64,7 +64,7 @@ class FakeNavigator:
         self.actions = actions
         self.max_planets = max_planets
 
-    def scan_visible_planets(self):
+    def scan_visible_planets(self, initial_panel=None):
         panel = self.reader.read()
         return type(
             "Scan",
@@ -76,7 +76,7 @@ class FakeNavigator:
             },
         )()
 
-    def go_to_planet(self, target_id, order, known_planets=None):
+    def go_to_planet(self, target_id, order, known_planets=None, current_panel=None):
         self.actions.calls.append(("go_to_planet", target_id, tuple(order)))
         return target_id in order
 
@@ -434,14 +434,14 @@ def test_planets_task_revalidates_live_target_cost_before_upgrade(monkeypatch):
             self.reader = reader
             self.actions = actions
 
-        def scan_visible_planets(self):
+        def scan_visible_planets(self, initial_panel=None):
             return type(
                 "Scan",
                 (),
                 {"planets": {4: stale_scan_panel}, "order": [4], "complete_loop": True},
             )()
 
-        def go_to_planet(self, target_id, order, known_planets=None):
+        def go_to_planet(self, target_id, order, known_planets=None, current_panel=None):
             self.actions.calls.append(("go_to_planet", target_id, tuple(order)))
             return target_id == 4
 
@@ -489,14 +489,14 @@ def test_planets_task_blocks_tiny_live_cost_when_scan_shows_same_level_is_more_e
             self.reader = reader
             self.actions = actions
 
-        def scan_visible_planets(self):
+        def scan_visible_planets(self, initial_panel=None):
             return type(
                 "Scan",
                 (),
                 {"planets": {4: scanned_panel}, "order": [4], "complete_loop": True},
             )()
 
-        def go_to_planet(self, target_id, order, known_planets=None):
+        def go_to_planet(self, target_id, order, known_planets=None, current_panel=None):
             self.actions.calls.append(("go_to_planet", target_id, tuple(order)))
             return target_id == 4
 

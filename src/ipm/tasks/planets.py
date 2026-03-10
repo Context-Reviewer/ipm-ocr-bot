@@ -292,7 +292,7 @@ class PlanetsTask:
                 },
             )
         navigator = PlanetNavigator(self.reader, self.actions)
-        scan = navigator.scan_visible_planets()
+        scan = navigator.scan_visible_planets(initial_panel=initial_panel)
         snapshot = self._read_planet_snapshot()
         snapshot.scanned_planets = dict(scan.planets)
         snapshot.planet_order = list(scan.order)
@@ -311,7 +311,12 @@ class PlanetsTask:
             target_before = scanned_target or snapshot.current_planet
             navigated = True
             if scan.order:
-                navigated = navigator.go_to_planet(decision.planet_id, scan.order, scan.planets)
+                navigated = navigator.go_to_planet(
+                    decision.planet_id,
+                    scan.order,
+                    scan.planets,
+                    current_panel=snapshot.current_planet,
+                )
             live_target_panel = None
             live_cost_plausible = True
             if navigated:

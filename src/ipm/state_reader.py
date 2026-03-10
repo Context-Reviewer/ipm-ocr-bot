@@ -12,15 +12,26 @@ class GameStateReader:
     ore_reader: object | None = None
     sell_reader: object | None = None
 
-    def read(self) -> GameSnapshot:
+    def _read_snapshot(
+        self,
+        *,
+        include_ore_rows: bool = True,
+        include_sell_dialog: bool = True,
+    ) -> GameSnapshot:
         snapshot = GameSnapshot()
         if self.hud_reader is not None:
             cash, _backend = self.hud_reader.read_cash()
             snapshot.cash = cash
         if self.planet_reader is not None:
             snapshot.current_planet = self.planet_reader.read()
-        if self.ore_reader is not None:
+        if include_ore_rows and self.ore_reader is not None:
             snapshot.ore_rows = self.ore_reader.read_visible_rows()
-        if self.sell_reader is not None:
+        if include_sell_dialog and self.sell_reader is not None:
             snapshot.sell_dialog = self.sell_reader.read()
         return snapshot
+
+    def read(self) -> GameSnapshot:
+        return self._read_snapshot()
+
+    def read_planet_snapshot(self) -> GameSnapshot:
+        return self._read_snapshot(include_ore_rows=False, include_sell_dialog=False)

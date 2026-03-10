@@ -15,6 +15,9 @@ class FakeStateReader:
         self.index += 1
         return value
 
+    def read_planet_snapshot(self):
+        return self.read()
+
 
 class FakeActions:
     def __init__(self):
@@ -513,6 +516,69 @@ def test_planets_task_blocks_tiny_live_cost_when_scan_shows_same_level_is_more_e
     assert result.details["executed"] is False
     assert result.details["verified"] is False
     assert ("increase_planet_stat", "C") not in actions.calls
+
+
+def test_planets_task_prefers_planet_only_snapshot_reader(monkeypatch):
+    before = GameSnapshot(
+        cash=500,
+        current_planet=PlanetPanelState(
+            planet_id=1,
+            title="1. BALOR",
+            mining_level=8,
+            speed_level=6,
+            cargo_level=7,
+            mining_cost=400,
+            speed_cost=200,
+            cargo_cost=250,
+        ),
+    )
+    after = GameSnapshot(
+        cash=300,
+        current_planet=PlanetPanelState(
+            planet_id=1,
+            title="1. BALOR",
+            mining_level=8,
+            speed_level=7,
+            cargo_level=7,
+            mining_cost=400,
+            speed_cost=240,
+            cargo_cost=250,
+        ),
+    )
+
+    class SelectiveStateReader:
+        def __init__(self, snapshots):
+            self.snapshots = list(snapshots)
+            self.index = 0
+            self.read_calls = 0
+            self.read_planet_snapshot_calls = 0
+
+        def read(self):
+            self.read_calls += 1
+            raise AssertionError("PlanetsTask should use read_planet_snapshot when available")
+
+        def read_planet_snapshot(self):
+            self.read_planet_snapshot_calls += 1
+            value = self.snapshots[min(self.index, len(self.snapshots) - 1)]
+            self.index += 1
+            return value
+
+    monkeypatch.setattr("ipm.tasks.planets.PlanetNavigator", FakeNavigator)
+    actions = FakeActions()
+    reader = FakePlanetReader([before.current_planet, before.current_planet, before.current_planet])
+    state_reader = SelectiveStateReader([before, after])
+    task = PlanetsTask(
+        reader=reader,
+        state_reader=state_reader,
+        actions=actions,
+        config=_runtime_config_without_starfield_probe(policy=PolicyConfig(max_planet_upgrades_per_task=1)),
+    )
+    result = task.run()
+    assert result.ok is True
+    assert result.details["executed"] is True
+    assert result.details["verified"] is True
+    assert state_reader.read_calls == 0
+    assert state_reader.read_planet_snapshot_calls == 4
 
 
 def test_ores_task_executes_sell_decision():

@@ -159,10 +159,16 @@ class PlanetsTask:
             return True
         return int(live_cost) >= int(scanned_cost)
 
+    def _read_planet_snapshot(self):
+        read_planet_snapshot = getattr(self.state_reader, "read_planet_snapshot", None)
+        if callable(read_planet_snapshot):
+            return read_planet_snapshot()
+        return self.state_reader.read()
+
     def _collect_snapshots(self, count: int):
         snapshots = []
         for _ in range(max(1, count)):
-            snapshots.append(self.state_reader.read())
+            snapshots.append(self._read_planet_snapshot())
         return snapshots
 
     def run(self) -> TaskResult:
@@ -287,7 +293,7 @@ class PlanetsTask:
             )
         navigator = PlanetNavigator(self.reader, self.actions)
         scan = navigator.scan_visible_planets()
-        snapshot = self.state_reader.read()
+        snapshot = self._read_planet_snapshot()
         snapshot.scanned_planets = dict(scan.planets)
         snapshot.planet_order = list(scan.order)
         max_steps = max(1, int(getattr(self.config.policy, "max_planet_upgrades_per_task", 1)))

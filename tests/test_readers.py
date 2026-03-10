@@ -357,12 +357,12 @@ def test_planet_panel_reader_scan_mode_skips_level_reads_when_costs_are_unafford
         name="windows",
         mapping={
             (cfg.perception.prompt_planet_panel, "planet_panel"): "",
-            (cfg.perception.prompt_planet_title, "planet_title"): "8. ACHEAON",
+            (cfg.perception.prompt_planet_title, "planet_title"): "8. ACHERON",
             (cfg.perception.prompt_numeric, "numeric"): "999999",
         },
     )
     state = PlanetPanelReader(cfg, rects, FakeCapture(), perception).read_for_scan(cash=100)
-    assert state.title == "8. ACHEAON"
+    assert state.title == "8. ACHERON"
     assert state.mining_cost == 999999
     assert state.speed_cost == 999999
     assert state.cargo_cost == 999999
@@ -371,6 +371,130 @@ def test_planet_panel_reader_scan_mode_skips_level_reads_when_costs_are_unafford
     assert state.cargo_level is None
     numeric_prompts = [mode for prompt, mode in perception.calls if mode == "numeric"]
     assert numeric_prompts == ["numeric", "numeric", "numeric"]
+
+
+def test_planet_panel_reader_scan_mode_prefers_direct_title_and_cost_reads():
+    cfg = RuntimeConfig()
+    rects = RectStore(
+        path=None,
+        rects={
+            "PLANET_PANEL_TEXT": (0, 0, 1, 1),
+            "PLANET_TITLE": (0, 0, 1, 1),
+            "UPGRADE_MINING": (0, 0, 1, 1),
+            "UPGRADE_SPEED": (0, 0, 1, 1),
+            "UPGRADE_CARGO": (0, 0, 1, 1),
+        },
+    )
+    perception = TrackingNumericBackend(
+        name="windows",
+        mapping={
+            (cfg.perception.prompt_planet_title, "planet_title"): "8. ACHERON",
+            (cfg.perception.prompt_numeric, "numeric"): "999999",
+            (cfg.perception.prompt_planet_panel, "planet_panel"): "should not be used",
+        },
+    )
+    state = PlanetPanelReader(cfg, rects, FakeCapture(), perception).read_for_scan(cash=100)
+    assert state.planet_id == 8
+    assert state.title == "8. ACHERON"
+    assert state.mining_cost == 999999
+    assert state.speed_cost == 999999
+    assert state.cargo_cost == 999999
+    assert state.mining_level is None
+    assert state.speed_level is None
+    assert state.cargo_level is None
+    assert ("planet_panel" not in [mode for _prompt, mode in perception.calls])
+
+
+def test_planet_panel_reader_scan_mode_falls_back_to_panel_parse_when_direct_seed_is_incomplete():
+    cfg = RuntimeConfig()
+    rects = RectStore(
+        path=None,
+        rects={
+            "PLANET_PANEL_TEXT": (0, 0, 1, 1),
+            "PLANET_TITLE": (0, 0, 1, 1),
+            "UPGRADE_MINING": (0, 0, 1, 1),
+            "UPGRADE_SPEED": (0, 0, 1, 1),
+            "UPGRADE_CARGO": (0, 0, 1, 1),
+        },
+    )
+    perception = TrackingNumericBackend(
+        name="windows",
+        mapping={
+            (cfg.perception.prompt_planet_title, "planet_title"): "",
+            (cfg.perception.prompt_numeric, "numeric"): "",
+            (
+                cfg.perception.prompt_planet_panel,
+                "planet_panel",
+            ): "\n".join(
+                [
+                    "$ 174",
+                    "2. BALOR",
+                    "Mining Rate",
+                    "1.11 / sec",
+                    "Ship Speed",
+                    "1.45 mkph",
+                    "Cargo",
+                    "7",
+                    "$461",
+                    "$210",
+                    "$210",
+                ]
+            ),
+        },
+    )
+    state = PlanetPanelReader(cfg, rects, FakeCapture(), perception).read_for_scan(cash=100)
+    assert state.planet_id == 2
+    assert state.title == "2. BALOR"
+    assert state.mining_cost == 461
+    assert state.speed_cost == 210
+    assert state.cargo_cost == 210
+    assert ("planet_panel" in [mode for _prompt, mode in perception.calls])
+
+
+def test_planet_panel_reader_scan_mode_falls_back_when_direct_title_id_is_inconsistent():
+    cfg = RuntimeConfig()
+    rects = RectStore(
+        path=None,
+        rects={
+            "PLANET_PANEL_TEXT": (0, 0, 1, 1),
+            "PLANET_TITLE": (0, 0, 1, 1),
+            "UPGRADE_MINING": (0, 0, 1, 1),
+            "UPGRADE_SPEED": (0, 0, 1, 1),
+            "UPGRADE_CARGO": (0, 0, 1, 1),
+        },
+    )
+    perception = TrackingNumericBackend(
+        name="windows",
+        mapping={
+            (cfg.perception.prompt_planet_title, "planet_title"): "5. NEWTON",
+            (cfg.perception.prompt_numeric, "numeric"): "999999",
+            (
+                cfg.perception.prompt_planet_panel,
+                "planet_panel",
+            ): "\n".join(
+                [
+                    "$ 174",
+                    "6. NEWTON",
+                    "Mining Rate",
+                    "1.11 / sec",
+                    "Ship Speed",
+                    "1.45 mkph",
+                    "Cargo",
+                    "7",
+                    "$9440",
+                    "$1500",
+                    "$1950",
+                ]
+            ),
+        },
+    )
+    state = PlanetPanelReader(cfg, rects, FakeCapture(), perception).read_for_scan(cash=100)
+    assert state.planet_id == 6
+    assert state.title == "6. NEWTON"
+    assert state.mining_cost == 9440
+    assert state.speed_cost == 1500
+    assert state.cargo_cost == 1950
+    assert ("planet_panel" in [mode for _prompt, mode in perception.calls])
 
 
 def test_ore_panel_reader_falls_through_to_legacy_after_openai_semantic_failure():

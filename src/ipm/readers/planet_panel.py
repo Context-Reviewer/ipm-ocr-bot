@@ -5,10 +5,13 @@ import re
 
 from .. import perception as perception_backend
 from ..config import RuntimeConfig
+from ..domain_data import PLANET_NAMES, normalize_planet_name
 from ..rects import RectStore
 from ..state import PlanetPanelState
 from .common import parse_compact_number, parse_int
 from .panel_text import ParsedPlanetPanel, parse_planet_panel_text
+
+_PLANET_ID_BY_NAME = {name: index + 1 for index, name in enumerate(PLANET_NAMES)}
 
 
 @dataclass(slots=True)
@@ -91,6 +94,16 @@ class PlanetPanelReader:
             return None
         return value
 
+    @staticmethod
+    def _scan_seed_title_is_trustworthy(panel: ParsedPlanetPanel) -> bool:
+        canonical_name = normalize_planet_name(panel.title)
+        if not canonical_name:
+            return False
+        if panel.planet_id is None:
+            return True
+        expected_id = _PLANET_ID_BY_NAME.get(canonical_name)
+        return expected_id is None or int(panel.planet_id) == int(expected_id)
+
     def _panel_from_openai(self, image) -> tuple[ParsedPlanetPanel, str]:
         structured = perception_backend.read_planet_panel_json(self.perception, image)
         if structured is None:
@@ -106,6 +119,41 @@ class PlanetPanelReader:
                 cargo_cost=self._sanitize_cost(parse_compact_number(structured.upgrades.cargo_cost), field_name="cargo_cost"),
             ),
             structured.backend,
+        )
+
+    def _read_scan_seed(self) -> tuple[ParsedPlanetPanel, str]:
+        title_text, title_backend = self._read_key_text(
+            "PLANET_TITLE",
+            prompt=self.config.perception.prompt_planet_title,
+            mode="planet_title",
+        )
+        title_text = self._sanitize_title(title_text)
+        match = re.search(r"^\s*(\d+)", title_text)
+
+        mining_cost_text, _ = self._read_key_text(
+            "UPGRADE_MINING",
+            prompt=self.config.perception.prompt_numeric,
+            mode="numeric",
+        )
+        speed_cost_text, _ = self._read_key_text(
+            "UPGRADE_SPEED",
+            prompt=self.config.perception.prompt_numeric,
+            mode="numeric",
+        )
+        cargo_cost_text, _ = self._read_key_text(
+            "UPGRADE_CARGO",
+            prompt=self.config.perception.prompt_numeric,
+            mode="numeric",
+        )
+        return (
+            ParsedPlanetPanel(
+                title=title_text,
+                planet_id=int(match.group(1)) if match else None,
+                mining_cost=self._sanitize_cost(parse_compact_number(mining_cost_text), field_name="mining_cost"),
+                speed_cost=self._sanitize_cost(parse_compact_number(speed_cost_text), field_name="speed_cost"),
+                cargo_cost=self._sanitize_cost(parse_compact_number(cargo_cost_text), field_name="cargo_cost"),
+            ),
+            title_backend,
         )
 
     def _read_panel(self) -> tuple[ParsedPlanetPanel, str]:
@@ -175,7 +223,22 @@ class PlanetPanelReader:
         return panel, title_backend
 
     def _read_state(self, *, scan_cash: int | None = None) -> PlanetPanelState:
-        parsed_panel, title_backend = self._read_panel()
+        if scan_cash is None:
+            parsed_panel, title_backend = self._read_panel()
+        else:
+            parsed_panel, title_backend = self._read_scan_seed()
+            scan_costs = tuple(
+                value
+                for value in (parsed_panel.mining_cost, parsed_panel.speed_cost, parsed_panel.cargo_cost)
+                if value is not None
+            )
+            seed_is_enough = self._panel_has_enough_data(parsed_panel)
+            title_is_trustworthy = self._scan_seed_title_is_trustworthy(parsed_panel)
+            clearly_unaffordable = bool(scan_costs) and all(int(cost) > int(scan_cash) for cost in scan_costs)
+            if not (seed_is_enough and title_is_trustworthy and clearly_unaffordable):
+                panel_parse, panel_title_backend = self._read_panel()
+                parsed_panel = panel_parse
+                title_backend = panel_title_backend
 
         title_text = parsed_panel.title
         if not title_text:

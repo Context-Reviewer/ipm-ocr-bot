@@ -189,6 +189,17 @@ class PlanetsTask:
             snapshots.append(self._read_planet_snapshot())
         return snapshots
 
+    def _collect_confirmation_snapshots(self, count: int, before_panel, target_planet_id: int, stat: str):
+        snapshots = []
+        verified_candidate = None
+        for _ in range(max(1, count)):
+            snapshot = self._read_planet_snapshot()
+            snapshots.append(snapshot)
+            if self._verified(before_panel, snapshot, target_planet_id, stat):
+                verified_candidate = snapshot
+                break
+        return snapshots, verified_candidate
+
     def run(self) -> TaskResult:
         if self.reader is None or self.state_reader is None or self.actions is None or self.config is None:
             return TaskResult(
@@ -359,14 +370,11 @@ class PlanetsTask:
             verified = False
             if executed:
                 confirm_reads = max(1, int(getattr(self.config.policy, "planet_upgrade_confirm_reads", 3)))
-                after_reads = self._collect_snapshots(confirm_reads)
-                verified_candidate = next(
-                    (
-                        candidate
-                        for candidate in after_reads
-                        if self._verified(target_before, candidate, decision.planet_id, decision.stat)
-                    ),
-                    None,
+                after_reads, verified_candidate = self._collect_confirmation_snapshots(
+                    confirm_reads,
+                    target_before,
+                    decision.planet_id,
+                    decision.stat,
                 )
                 step_after = verified_candidate or after_reads[-1]
                 step_after.scanned_planets = dict(snapshot.scanned_planets)

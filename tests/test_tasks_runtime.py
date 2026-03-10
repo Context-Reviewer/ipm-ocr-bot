@@ -19,6 +19,16 @@ class FakeStateReader:
         return self.read()
 
 
+class CountingStateReader(FakeStateReader):
+    def __init__(self, snapshots):
+        super().__init__(snapshots)
+        self.read_planet_snapshot_calls = 0
+
+    def read_planet_snapshot(self):
+        self.read_planet_snapshot_calls += 1
+        return super().read_planet_snapshot()
+
+
 class FakeActions:
     def __init__(self):
         self.calls = []
@@ -262,6 +272,153 @@ def test_planets_task_retries_after_reads_for_later_same_planet_upgrade(monkeypa
     assert result.details["decision"]["planet_id"] == 5
     assert result.details["decision"]["stat"] == "C"
     assert result.details["steps"][0]["after_planet"]["cargo_level"] == 10
+
+
+def test_planets_task_stops_confirmation_reads_after_first_verified_snapshot(monkeypatch):
+    before = GameSnapshot(
+        cash=500,
+        current_planet=PlanetPanelState(
+            planet_id=1,
+            title="1. BALOR",
+            mining_level=8,
+            speed_level=6,
+            cargo_level=7,
+            mining_cost=400,
+            speed_cost=200,
+            cargo_cost=250,
+        ),
+    )
+    after = GameSnapshot(
+        cash=300,
+        current_planet=PlanetPanelState(
+            planet_id=1,
+            title="1. BALOR",
+            mining_level=8,
+            speed_level=7,
+            cargo_level=7,
+            mining_cost=400,
+            speed_cost=240,
+            cargo_cost=250,
+        ),
+    )
+    monkeypatch.setattr("ipm.tasks.planets.PlanetNavigator", FakeNavigator)
+    actions = FakeActions()
+    reader = FakePlanetReader([before.current_planet, before.current_planet, before.current_planet])
+    state_reader = CountingStateReader([before, after, after, after])
+    task = PlanetsTask(
+        reader=reader,
+        state_reader=state_reader,
+        actions=actions,
+        config=_runtime_config_without_starfield_probe(policy=PolicyConfig(max_planet_upgrades_per_task=1)),
+    )
+    result = task.run()
+    assert result.ok is True
+    assert result.details["verified"] is True
+    assert state_reader.read_planet_snapshot_calls == 2
+
+
+def test_planets_task_stops_confirmation_reads_after_second_verified_snapshot(monkeypatch):
+    before = GameSnapshot(
+        cash=5000,
+        current_planet=PlanetPanelState(
+            planet_id=5,
+            title="5. VERR",
+            mining_level=12,
+            speed_level=9,
+            cargo_level=9,
+            mining_cost=4480,
+            speed_cost=2040,
+            cargo_cost=2040,
+        ),
+    )
+    stale_after = GameSnapshot(
+        cash=5000,
+        current_planet=PlanetPanelState(
+            planet_id=5,
+            title="5. VERR",
+            mining_level=12,
+            speed_level=9,
+            cargo_level=9,
+            mining_cost=4480,
+            speed_cost=2040,
+            cargo_cost=2040,
+        ),
+    )
+    verified_after = GameSnapshot(
+        cash=2960,
+        current_planet=PlanetPanelState(
+            planet_id=5,
+            title="5. VERR",
+            mining_level=12,
+            speed_level=9,
+            cargo_level=10,
+            mining_cost=4480,
+            speed_cost=2040,
+            cargo_cost=2650,
+        ),
+    )
+    monkeypatch.setattr("ipm.tasks.planets.PlanetNavigator", FakeNavigator)
+    actions = FakeActions()
+    reader = FakePlanetReader([before.current_planet, before.current_planet, before.current_planet])
+    state_reader = CountingStateReader([before, stale_after, verified_after, verified_after])
+    task = PlanetsTask(
+        reader=reader,
+        state_reader=state_reader,
+        actions=actions,
+        config=_runtime_config_without_starfield_probe(
+            policy=PolicyConfig(max_planet_upgrades_per_task=1, planet_upgrade_confirm_reads=3)
+        ),
+    )
+    result = task.run()
+    assert result.ok is True
+    assert result.details["verified"] is True
+    assert state_reader.read_planet_snapshot_calls == 3
+
+
+def test_planets_task_uses_full_confirmation_budget_when_step_never_verifies(monkeypatch):
+    before = GameSnapshot(
+        cash=500,
+        current_planet=PlanetPanelState(
+            planet_id=1,
+            title="1. BALOR",
+            mining_level=8,
+            speed_level=6,
+            cargo_level=7,
+            mining_cost=400,
+            speed_cost=200,
+            cargo_cost=250,
+        ),
+    )
+    stale_after = GameSnapshot(
+        cash=300,
+        current_planet=PlanetPanelState(
+            planet_id=1,
+            title="1. BALOR",
+            mining_level=8,
+            speed_level=6,
+            cargo_level=7,
+            mining_cost=400,
+            speed_cost=200,
+            cargo_cost=250,
+        ),
+    )
+    monkeypatch.setattr("ipm.tasks.planets.PlanetNavigator", FakeNavigator)
+    actions = FakeActions()
+    reader = FakePlanetReader([before.current_planet, before.current_planet, before.current_planet])
+    state_reader = CountingStateReader([before, stale_after, stale_after, stale_after])
+    task = PlanetsTask(
+        reader=reader,
+        state_reader=state_reader,
+        actions=actions,
+        config=_runtime_config_without_starfield_probe(
+            policy=PolicyConfig(max_planet_upgrades_per_task=1, planet_upgrade_confirm_reads=3)
+        ),
+    )
+    result = task.run()
+    assert result.ok is False
+    assert result.details["executed"] is True
+    assert result.details["verified"] is False
+    assert state_reader.read_planet_snapshot_calls == 4
 
 
 def test_planets_task_verifies_upgrade_from_cost_increase_when_level_ocr_misses(monkeypatch):
@@ -578,7 +735,7 @@ def test_planets_task_prefers_planet_only_snapshot_reader(monkeypatch):
     assert result.details["executed"] is True
     assert result.details["verified"] is True
     assert state_reader.read_calls == 0
-    assert state_reader.read_planet_snapshot_calls == 4
+    assert state_reader.read_planet_snapshot_calls == 2
 
 
 def test_ores_task_executes_sell_decision():

@@ -53,19 +53,57 @@ class PlanetPanelReader:
             cargo_cost=override.cargo_cost if override.cargo_cost is not None else base.cargo_cost,
         )
 
+    def _sanitize_title(self, value: str | None) -> str:
+        cleaned = str(value or "").strip()
+        if not cleaned:
+            return ""
+        normalized = " ".join(cleaned.lower().split())
+        if any(
+            token in normalized
+            for token in (
+                "the visible planet title is",
+                "visible planet title is",
+                "planet title is",
+                "title is",
+            )
+        ):
+            print(f"[PERCEPTION] planet_panel semantic_reject reason=invalid_title_prose value={cleaned!r}")
+            return ""
+        return cleaned
+
+    def _sanitize_level(self, value: int | None, *, field_name: str) -> int | None:
+        if value is None:
+            return None
+        minimum = int(self.config.perception.semantic_level_min)
+        maximum = int(self.config.perception.semantic_level_max)
+        if value < minimum or value > maximum:
+            print(f"[PERCEPTION] planet_panel semantic_reject reason=implausible_level field={field_name} value={value}")
+            return None
+        return value
+
+    def _sanitize_cost(self, value: int | None, *, field_name: str) -> int | None:
+        if value is None:
+            return None
+        minimum = int(self.config.perception.semantic_upgrade_cost_min)
+        maximum = int(self.config.perception.semantic_upgrade_cost_max)
+        if value < minimum or value > maximum:
+            print(f"[PERCEPTION] planet_panel semantic_reject reason=implausible_cost field={field_name} value={value}")
+            return None
+        return value
+
     def _panel_from_openai(self, image) -> tuple[ParsedPlanetPanel, str]:
         structured = perception_backend.read_planet_panel_json(self.perception, image)
         if structured is None:
             return ParsedPlanetPanel(), ""
-        title = structured.planet_name or ""
+        title = self._sanitize_title(structured.planet_name)
         match = re.search(r"^\s*(\d+)", title)
         return (
             ParsedPlanetPanel(
                 title=title,
                 planet_id=int(match.group(1)) if match else None,
-                mining_cost=parse_compact_number(structured.upgrades.mining_cost),
-                speed_cost=parse_compact_number(structured.upgrades.speed_cost),
-                cargo_cost=parse_compact_number(structured.upgrades.cargo_cost),
+                mining_cost=self._sanitize_cost(parse_compact_number(structured.upgrades.mining_cost), field_name="mining_cost"),
+                speed_cost=self._sanitize_cost(parse_compact_number(structured.upgrades.speed_cost), field_name="speed_cost"),
+                cargo_cost=self._sanitize_cost(parse_compact_number(structured.upgrades.cargo_cost), field_name="cargo_cost"),
             ),
             structured.backend,
         )
@@ -84,6 +122,16 @@ class PlanetPanelReader:
             allowed_backend_names=("windows",),
         )
         panel = parse_planet_panel_text(windows_result.value) if windows_result.value else ParsedPlanetPanel()
+        panel = ParsedPlanetPanel(
+            title=self._sanitize_title(panel.title),
+            planet_id=panel.planet_id,
+            mining_level=self._sanitize_level(panel.mining_level, field_name="mining_level"),
+            speed_level=self._sanitize_level(panel.speed_level, field_name="speed_level"),
+            cargo_level=self._sanitize_level(panel.cargo_level, field_name="cargo_level"),
+            mining_cost=self._sanitize_cost(panel.mining_cost, field_name="mining_cost"),
+            speed_cost=self._sanitize_cost(panel.speed_cost, field_name="speed_cost"),
+            cargo_cost=self._sanitize_cost(panel.cargo_cost, field_name="cargo_cost"),
+        )
         if panel.title:
             title_backend = windows_result.backend
         if self._panel_has_enough_data(panel):
@@ -109,6 +157,16 @@ class PlanetPanelReader:
             allowed_backend_names=("legacy",),
         )
         legacy_panel = parse_planet_panel_text(legacy_result.value) if legacy_result.value else ParsedPlanetPanel()
+        legacy_panel = ParsedPlanetPanel(
+            title=self._sanitize_title(legacy_panel.title),
+            planet_id=legacy_panel.planet_id,
+            mining_level=self._sanitize_level(legacy_panel.mining_level, field_name="mining_level"),
+            speed_level=self._sanitize_level(legacy_panel.speed_level, field_name="speed_level"),
+            cargo_level=self._sanitize_level(legacy_panel.cargo_level, field_name="cargo_level"),
+            mining_cost=self._sanitize_cost(legacy_panel.mining_cost, field_name="mining_cost"),
+            speed_cost=self._sanitize_cost(legacy_panel.speed_cost, field_name="speed_cost"),
+            cargo_cost=self._sanitize_cost(legacy_panel.cargo_cost, field_name="cargo_cost"),
+        )
         if legacy_panel.title or any(
             value is not None for value in (legacy_panel.mining_cost, legacy_panel.speed_cost, legacy_panel.cargo_cost)
         ):
@@ -116,7 +174,7 @@ class PlanetPanelReader:
             title_backend = title_backend or legacy_result.backend
         return panel, title_backend
 
-    def read(self) -> PlanetPanelState:
+    def _read_state(self, *, scan_cash: int | None = None) -> PlanetPanelState:
         parsed_panel, title_backend = self._read_panel()
 
         title_text = parsed_panel.title
@@ -126,33 +184,34 @@ class PlanetPanelReader:
                 prompt=self.config.perception.prompt_planet_title,
                 mode="planet_title",
             )
+            title_text = self._sanitize_title(title_text)
 
         mining_level = parsed_panel.mining_level
-        if mining_level is None:
+        if scan_cash is None and mining_level is None:
             mining_text, _ = self._read_key_text(
                 "MINING_LVL",
                 prompt=self.config.perception.prompt_numeric,
                 mode="numeric",
             )
-            mining_level = parse_int(mining_text)
+            mining_level = self._sanitize_level(parse_int(mining_text), field_name="mining_level")
 
         speed_level = parsed_panel.speed_level
-        if speed_level is None:
+        if scan_cash is None and speed_level is None:
             speed_text, _ = self._read_key_text(
                 "SHIP_LVL",
                 prompt=self.config.perception.prompt_numeric,
                 mode="numeric",
             )
-            speed_level = parse_int(speed_text)
+            speed_level = self._sanitize_level(parse_int(speed_text), field_name="speed_level")
 
         cargo_level = parsed_panel.cargo_level
-        if cargo_level is None:
+        if scan_cash is None and cargo_level is None:
             cargo_text, _ = self._read_key_text(
                 "CARGO_LVL",
                 prompt=self.config.perception.prompt_numeric,
                 mode="numeric",
             )
-            cargo_level = parse_int(cargo_text)
+            cargo_level = self._sanitize_level(parse_int(cargo_text), field_name="cargo_level")
 
         mining_cost = parsed_panel.mining_cost
         if mining_cost is None:
@@ -161,7 +220,7 @@ class PlanetPanelReader:
                 prompt=self.config.perception.prompt_numeric,
                 mode="numeric",
             )
-            mining_cost = parse_compact_number(mining_cost_text)
+            mining_cost = self._sanitize_cost(parse_compact_number(mining_cost_text), field_name="mining_cost")
 
         speed_cost = parsed_panel.speed_cost
         if speed_cost is None:
@@ -170,7 +229,7 @@ class PlanetPanelReader:
                 prompt=self.config.perception.prompt_numeric,
                 mode="numeric",
             )
-            speed_cost = parse_compact_number(speed_cost_text)
+            speed_cost = self._sanitize_cost(parse_compact_number(speed_cost_text), field_name="speed_cost")
 
         cargo_cost = parsed_panel.cargo_cost
         if cargo_cost is None:
@@ -179,7 +238,34 @@ class PlanetPanelReader:
                 prompt=self.config.perception.prompt_numeric,
                 mode="numeric",
             )
-            cargo_cost = parse_compact_number(cargo_cost_text)
+            cargo_cost = self._sanitize_cost(parse_compact_number(cargo_cost_text), field_name="cargo_cost")
+
+        costs = tuple(value for value in (mining_cost, speed_cost, cargo_cost) if value is not None)
+        needs_level_reads = scan_cash is None or any(int(cost) <= int(scan_cash) for cost in costs)
+
+        if scan_cash is not None and needs_level_reads and mining_level is None:
+            mining_text, _ = self._read_key_text(
+                "MINING_LVL",
+                prompt=self.config.perception.prompt_numeric,
+                mode="numeric",
+            )
+            mining_level = self._sanitize_level(parse_int(mining_text), field_name="mining_level")
+
+        if scan_cash is not None and needs_level_reads and speed_level is None:
+            speed_text, _ = self._read_key_text(
+                "SHIP_LVL",
+                prompt=self.config.perception.prompt_numeric,
+                mode="numeric",
+            )
+            speed_level = self._sanitize_level(parse_int(speed_text), field_name="speed_level")
+
+        if scan_cash is not None and needs_level_reads and cargo_level is None:
+            cargo_text, _ = self._read_key_text(
+                "CARGO_LVL",
+                prompt=self.config.perception.prompt_numeric,
+                mode="numeric",
+            )
+            cargo_level = self._sanitize_level(parse_int(cargo_text), field_name="cargo_level")
 
         match = re.search(r"^\s*(\d+)", title_text)
         planet_id = parsed_panel.planet_id or (int(match.group(1)) if match else None)
@@ -194,3 +280,9 @@ class PlanetPanelReader:
             cargo_cost=cargo_cost,
             title_backend=title_backend,
         )
+
+    def read(self) -> PlanetPanelState:
+        return self._read_state()
+
+    def read_for_scan(self, *, cash: int | None = None) -> PlanetPanelState:
+        return self._read_state(scan_cash=cash)

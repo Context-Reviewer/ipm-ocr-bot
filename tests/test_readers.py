@@ -90,6 +90,16 @@ class SequentialNumericBackend(FakeBackend):
         return Result(value, self.name)
 
 
+class TrackingNumericBackend(FakeBackend):
+    def __init__(self, *, name, mapping=None):
+        super().__init__(name=name, mapping=mapping or {})
+        self.calls = []
+
+    def read_text(self, _image, *, prompt="", mode="generic"):
+        self.calls.append((prompt, mode))
+        return super().read_text(_image, prompt=prompt, mode=mode)
+
+
 def _openai_fallback(backend):
     return HybridPerceptionBackend(
         primary=backend,
@@ -326,6 +336,41 @@ def test_planet_panel_reader_accepts_early_planet_costs_from_openai_json():
     assert state.speed_cost == 106
     assert state.cargo_cost == 29
     assert state.title_backend == "openai"
+
+
+def test_planet_panel_reader_scan_mode_skips_level_reads_when_costs_are_unaffordable():
+    cfg = RuntimeConfig()
+    rects = RectStore(
+        path=None,
+        rects={
+            "PLANET_PANEL_TEXT": (0, 0, 1, 1),
+            "PLANET_TITLE": (0, 0, 1, 1),
+            "MINING_LVL": (0, 0, 1, 1),
+            "SHIP_LVL": (0, 0, 1, 1),
+            "CARGO_LVL": (0, 0, 1, 1),
+            "UPGRADE_MINING": (0, 0, 1, 1),
+            "UPGRADE_SPEED": (0, 0, 1, 1),
+            "UPGRADE_CARGO": (0, 0, 1, 1),
+        },
+    )
+    perception = TrackingNumericBackend(
+        name="windows",
+        mapping={
+            (cfg.perception.prompt_planet_panel, "planet_panel"): "",
+            (cfg.perception.prompt_planet_title, "planet_title"): "8. ACHEAON",
+            (cfg.perception.prompt_numeric, "numeric"): "999999",
+        },
+    )
+    state = PlanetPanelReader(cfg, rects, FakeCapture(), perception).read_for_scan(cash=100)
+    assert state.title == "8. ACHEAON"
+    assert state.mining_cost == 999999
+    assert state.speed_cost == 999999
+    assert state.cargo_cost == 999999
+    assert state.mining_level is None
+    assert state.speed_level is None
+    assert state.cargo_level is None
+    numeric_prompts = [mode for prompt, mode in perception.calls if mode == "numeric"]
+    assert numeric_prompts == ["numeric", "numeric", "numeric"]
 
 
 def test_ore_panel_reader_falls_through_to_legacy_after_openai_semantic_failure():

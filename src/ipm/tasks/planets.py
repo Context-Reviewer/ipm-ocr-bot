@@ -10,6 +10,18 @@ from .base import TaskResult
 
 
 @dataclass(slots=True)
+class _PlanetScanReader:
+    reader: object
+    cash: int | None = None
+
+    def read(self):
+        read_for_scan = getattr(self.reader, "read_for_scan", None)
+        if callable(read_for_scan):
+            return read_for_scan(cash=self.cash)
+        return self.reader.read()
+
+
+@dataclass(slots=True)
 class PlanetsTask:
     reader: object | None = None
     state_reader: object | None = None
@@ -165,6 +177,12 @@ class PlanetsTask:
             return read_planet_snapshot()
         return self.state_reader.read()
 
+    def _read_cash_snapshot(self):
+        read_cash_snapshot = getattr(self.state_reader, "read_cash_snapshot", None)
+        if callable(read_cash_snapshot):
+            return read_cash_snapshot()
+        return None
+
     def _collect_snapshots(self, count: int):
         snapshots = []
         for _ in range(max(1, count)):
@@ -291,9 +309,15 @@ class PlanetsTask:
                     "error": "planet_panel_unreadable",
                 },
             )
-        navigator = PlanetNavigator(self.reader, self.actions)
+        cash_snapshot = self._read_cash_snapshot()
+        navigator = PlanetNavigator(
+            _PlanetScanReader(self.reader, cash=getattr(cash_snapshot, "cash", None)),
+            self.actions,
+        )
         scan = navigator.scan_visible_planets(initial_panel=initial_panel)
-        snapshot = self._read_planet_snapshot()
+        snapshot = cash_snapshot if cash_snapshot is not None else self._read_planet_snapshot()
+        if getattr(cash_snapshot, "cash", None) is not None:
+            snapshot.cash = cash_snapshot.cash
         snapshot.scanned_planets = dict(scan.planets)
         snapshot.planet_order = list(scan.order)
         max_steps = max(1, int(getattr(self.config.policy, "max_planet_upgrades_per_task", 1)))

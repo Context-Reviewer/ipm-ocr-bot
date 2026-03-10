@@ -113,3 +113,35 @@ def test_scan_restores_last_valid_panel_before_go_to_planet_after_wrap():
     assert scan.order == [4, 5, 6]
     assert navigator.current().planet_id == 6
     assert navigator.go_to_planet(5, scan.order, scan.planets) is True
+
+
+def test_go_to_planet_uses_alternate_direction_for_truncated_live_order():
+    world = type(
+        "World",
+        (),
+        {
+            "panels": [
+                PlanetPanelState(planet_id=4, title="DHOLEN"),
+                PlanetPanelState(planet_id=5, title="VERR"),
+                PlanetPanelState(planet_id=6, title="NEWTON"),
+                PlanetPanelState(planet_id=7, title="WIDOW"),
+                PlanetPanelState(planet_id=8, title="ACHERON"),
+                PlanetPanelState(planet_id=9, title="YANGTZE"),
+                PlanetPanelState(planet_id=10, title="SOLVEIG"),
+                PlanetPanelState(planet_id=11, title="IMIR"),
+                PlanetPanelState(planet_id=12, title="RELIC"),
+                PlanetPanelState(planet_id=13, title="NITH"),
+                PlanetPanelState(planet_id=1, title="BALOR"),
+                PlanetPanelState(planet_id=2, title="DRASTA"),
+                PlanetPanelState(planet_id=3, title="ANADIUS"),
+            ],
+            "index": 9,
+        },
+    )()
+    navigator = PlanetNavigator(CycleReader(world), CycleActions(world), max_planets=16)
+    order = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    known = {panel.planet_id: panel for panel in world.panels if panel.planet_id in order}
+    assert navigator.current().title == "NITH"
+    assert navigator.go_to_planet(5, order, known) is True
+    assert navigator.current().planet_id == 5
+    assert navigator.current().title == "VERR"

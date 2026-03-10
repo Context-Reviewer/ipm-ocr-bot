@@ -84,6 +84,25 @@ class PlanetNavigator:
         except Exception:
             return
 
+    def _follow_route(
+        self,
+        *,
+        direction: int,
+        steps: int,
+        order: list[int],
+        known_planets: dict[int, PlanetPanelState] | None,
+        target_id: int,
+    ) -> tuple[bool, int]:
+        moved_steps = 0
+        for _ in range(steps):
+            moved = self.step(direction)
+            if moved is None:
+                return False, moved_steps
+            moved_steps += 1
+        final = self.current()
+        final_id = self._resolve_current_id(final, order, known_planets)
+        return final_id == target_id, moved_steps
+
     def scan_visible_planets(self) -> GalaxyScan:
         scan = GalaxyScan()
         first = self.current()
@@ -187,15 +206,35 @@ class PlanetNavigator:
         forward = (target_idx - current_idx) % len(order)
         backward = (current_idx - target_idx) % len(order)
         if forward <= backward:
-            direction = 1
-            steps = forward
+            primary = (1, forward)
+            alternate = (-1, backward)
         else:
-            direction = -1
-            steps = backward
-        for _ in range(steps):
-            moved = self.step(direction)
-            if moved is None:
+            primary = (-1, backward)
+            alternate = (1, forward)
+        success, moved_steps = self._follow_route(
+            direction=primary[0],
+            steps=primary[1],
+            order=order,
+            known_planets=known_planets,
+            target_id=target_id,
+        )
+        if success:
+            return True
+        if alternate[1] == primary[1] and alternate[0] == primary[0]:
+            return False
+        for _ in range(moved_steps):
+            restored = self.step(-primary[0])
+            if restored is None:
                 return False
-        final = self.current()
-        final_id = self._resolve_current_id(final, order, known_planets)
-        return final_id == target_id
+        restored_panel = self.current()
+        restored_id = self._resolve_current_id(restored_panel, order, known_planets)
+        if restored_id != current_id:
+            return False
+        success, _moved_steps = self._follow_route(
+            direction=alternate[0],
+            steps=alternate[1],
+            order=order,
+            known_planets=known_planets,
+            target_id=target_id,
+        )
+        return success

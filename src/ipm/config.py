@@ -151,6 +151,7 @@ class PolicyConfig:
     ore_keep_quantity: int = 25_000
     max_planet_upgrades_per_task: int = 5
     planet_panel_open_attempts: int = 3
+    planet_upgrade_confirm_reads: int = 3
     ore_sell_confirm_reads: int = 3
     ore_sell_max_relative_spread: float = 0.35
     known_ore_names: tuple[str, ...] = ORE_NAMES

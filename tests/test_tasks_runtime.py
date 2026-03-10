@@ -204,6 +204,63 @@ def test_planets_task_replans_for_multiple_verified_upgrades(monkeypatch):
     assert actions.calls.count(("increase_planet_stat", "S")) == 2
 
 
+def test_planets_task_retries_after_reads_for_later_same_planet_upgrade(monkeypatch):
+    before = PlanetPanelState(
+        planet_id=5,
+        title="5. VERR",
+        mining_level=12,
+        speed_level=9,
+        cargo_level=9,
+        mining_cost=4480,
+        speed_cost=2040,
+        cargo_cost=2040,
+    )
+    stale_after = PlanetPanelState(
+        planet_id=5,
+        title="5. VERR",
+        mining_level=12,
+        speed_level=9,
+        cargo_level=9,
+        mining_cost=4480,
+        speed_cost=2040,
+        cargo_cost=2040,
+    )
+    verified_after = PlanetPanelState(
+        planet_id=5,
+        title="5. VERR",
+        mining_level=12,
+        speed_level=9,
+        cargo_level=10,
+        mining_cost=4480,
+        speed_cost=2040,
+        cargo_cost=2650,
+    )
+    monkeypatch.setattr("ipm.tasks.planets.PlanetNavigator", FakeNavigator)
+    actions = FakeActions()
+    reader = FakePlanetReader([before, before, stale_after, verified_after])
+    task = PlanetsTask(
+        reader=reader,
+        state_reader=FakeStateReader(
+            [
+                GameSnapshot(cash=5000, current_planet=before),
+                GameSnapshot(cash=5000, current_planet=stale_after),
+                GameSnapshot(cash=2960, current_planet=verified_after),
+            ]
+        ),
+        actions=actions,
+        config=_runtime_config_without_starfield_probe(
+            policy=PolicyConfig(max_planet_upgrades_per_task=1, planet_upgrade_confirm_reads=2)
+        ),
+    )
+    result = task.run()
+    assert result.ok is True
+    assert result.details["executed"] is True
+    assert result.details["verified"] is True
+    assert result.details["decision"]["planet_id"] == 5
+    assert result.details["decision"]["stat"] == "C"
+    assert result.details["steps"][0]["after_planet"]["cargo_level"] == 10
+
+
 def test_planets_task_verifies_upgrade_from_cost_increase_when_level_ocr_misses(monkeypatch):
     before = GameSnapshot(
         cash=1000,

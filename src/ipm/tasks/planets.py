@@ -106,6 +106,12 @@ class PlanetsTask:
                 return "not_starfield_ready"
         return None
 
+    def _collect_snapshots(self, count: int):
+        snapshots = []
+        for _ in range(max(1, count)):
+            snapshots.append(self.state_reader.read())
+        return snapshots
+
     def run(self) -> TaskResult:
         if self.reader is None or self.state_reader is None or self.actions is None or self.config is None:
             return TaskResult(
@@ -250,10 +256,20 @@ class PlanetsTask:
             step_after = None
             verified = False
             if executed:
-                step_after = self.state_reader.read()
+                confirm_reads = max(1, int(getattr(self.config.policy, "planet_upgrade_confirm_reads", 3)))
+                after_reads = self._collect_snapshots(confirm_reads)
+                verified_candidate = next(
+                    (
+                        candidate
+                        for candidate in after_reads
+                        if self._verified(target_before, candidate, decision.planet_id, decision.stat)
+                    ),
+                    None,
+                )
+                step_after = verified_candidate or after_reads[-1]
                 step_after.scanned_planets = dict(snapshot.scanned_planets)
                 step_after.planet_order = list(snapshot.planet_order)
-                verified = self._verified(target_before, step_after, decision.planet_id, decision.stat)
+                verified = verified_candidate is not None
             steps.append(
                 {
                     "decision": asdict(decision),

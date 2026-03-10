@@ -183,6 +183,12 @@ class PlanetsTask:
             return read_cash_snapshot()
         return None
 
+    def _read_current_planet_snapshot(self):
+        read_current_planet_snapshot = getattr(self.state_reader, "read_current_planet_snapshot", None)
+        if callable(read_current_planet_snapshot):
+            return read_current_planet_snapshot()
+        return self._read_planet_snapshot()
+
     def _collect_snapshots(self, count: int):
         snapshots = []
         for _ in range(max(1, count)):
@@ -193,11 +199,17 @@ class PlanetsTask:
         snapshots = []
         verified_candidate = None
         for _ in range(max(1, count)):
-            snapshot = self._read_planet_snapshot()
+            snapshot = self._read_current_planet_snapshot()
             snapshots.append(snapshot)
             if self._verified(before_panel, snapshot, target_planet_id, stat):
                 verified_candidate = snapshot
                 break
+        if verified_candidate is not None and verified_candidate.cash is None:
+            cash_snapshot = self._read_cash_snapshot()
+            if cash_snapshot is None or cash_snapshot.cash is None:
+                cash_snapshot = self._read_planet_snapshot()
+            if cash_snapshot is not None:
+                verified_candidate.cash = cash_snapshot.cash
         return snapshots, verified_candidate
 
     def run(self) -> TaskResult:
@@ -329,8 +341,9 @@ class PlanetsTask:
         snapshot = cash_snapshot if cash_snapshot is not None else self._read_planet_snapshot()
         if getattr(cash_snapshot, "cash", None) is not None:
             snapshot.cash = cash_snapshot.cash
-        if not self._panel_readable(getattr(snapshot, "current_planet", None)) and scan.final_panel is not None:
-            snapshot.current_planet = scan.final_panel
+        scan_final_panel = getattr(scan, "final_panel", None)
+        if not self._panel_readable(getattr(snapshot, "current_planet", None)) and scan_final_panel is not None:
+            snapshot.current_planet = scan_final_panel
         snapshot.scanned_planets = dict(scan.planets)
         snapshot.planet_order = list(scan.order)
         max_steps = max(1, int(getattr(self.config.policy, "max_planet_upgrades_per_task", 1)))

@@ -15,12 +15,13 @@ class GameStateReader:
     def _read_snapshot(
         self,
         *,
+        include_cash: bool = True,
         include_current_planet: bool = True,
         include_ore_rows: bool = True,
         include_sell_dialog: bool = True,
     ) -> GameSnapshot:
         snapshot = GameSnapshot()
-        if self.hud_reader is not None:
+        if include_cash and self.hud_reader is not None:
             cash, _backend = self.hud_reader.read_cash()
             snapshot.cash = cash
         if include_current_planet and self.planet_reader is not None:
@@ -39,7 +40,16 @@ class GameStateReader:
 
     def read_cash_snapshot(self) -> GameSnapshot:
         return self._read_snapshot(
+            include_cash=True,
             include_current_planet=False,
+            include_ore_rows=False,
+            include_sell_dialog=False,
+        )
+
+    def read_current_planet_snapshot(self) -> GameSnapshot:
+        return self._read_snapshot(
+            include_cash=False,
+            include_current_planet=True,
             include_ore_rows=False,
             include_sell_dialog=False,
         )

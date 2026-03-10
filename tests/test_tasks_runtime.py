@@ -738,6 +738,70 @@ def test_planets_task_prefers_planet_only_snapshot_reader(monkeypatch):
     assert state_reader.read_planet_snapshot_calls == 2
 
 
+def test_planets_task_uses_current_planet_snapshot_for_confirmation_and_refreshes_cash_once(monkeypatch):
+    before = GameSnapshot(
+        cash=500,
+        current_planet=PlanetPanelState(
+            planet_id=1,
+            title="1. BALOR",
+            mining_level=8,
+            speed_level=6,
+            cargo_level=7,
+            mining_cost=400,
+            speed_cost=200,
+            cargo_cost=250,
+        ),
+    )
+    after_panel_only = GameSnapshot(
+        current_planet=PlanetPanelState(
+            planet_id=1,
+            title="1. BALOR",
+            mining_level=8,
+            speed_level=7,
+            cargo_level=7,
+            mining_cost=400,
+            speed_cost=240,
+            cargo_cost=250,
+        ),
+    )
+
+    class SelectiveStateReader:
+        def __init__(self):
+            self.read_planet_snapshot_calls = 0
+            self.read_current_planet_snapshot_calls = 0
+            self.read_cash_snapshot_calls = 0
+
+        def read_planet_snapshot(self):
+            self.read_planet_snapshot_calls += 1
+            raise AssertionError("confirmation should not need full planet snapshots when current-planet snapshots are available")
+
+        def read_current_planet_snapshot(self):
+            self.read_current_planet_snapshot_calls += 1
+            return after_panel_only
+
+        def read_cash_snapshot(self):
+            self.read_cash_snapshot_calls += 1
+            return GameSnapshot(cash=500 if self.read_cash_snapshot_calls == 1 else 300)
+
+    monkeypatch.setattr("ipm.tasks.planets.PlanetNavigator", FakeNavigator)
+    actions = FakeActions()
+    reader = FakePlanetReader([before.current_planet, before.current_planet, before.current_planet])
+    state_reader = SelectiveStateReader()
+    task = PlanetsTask(
+        reader=reader,
+        state_reader=state_reader,
+        actions=actions,
+        config=_runtime_config_without_starfield_probe(policy=PolicyConfig(max_planet_upgrades_per_task=1)),
+    )
+    result = task.run()
+    assert result.ok is True
+    assert result.details["verified"] is True
+    assert result.details["cash"] == 300
+    assert state_reader.read_planet_snapshot_calls == 0
+    assert state_reader.read_current_planet_snapshot_calls == 1
+    assert state_reader.read_cash_snapshot_calls == 2
+
+
 def test_planets_task_reuses_scan_final_panel_as_current_panel_when_cash_snapshot_has_no_panel(monkeypatch):
     before = GameSnapshot(
         cash=500,

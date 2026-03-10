@@ -131,6 +131,34 @@ class PlanetsTask:
         value = getattr(panel, cost_attr, None)
         return int(value) if value is not None else None
 
+    @staticmethod
+    def _panel_level_for_stat(panel, stat: str) -> int | None:
+        if panel is None:
+            return None
+        level_attr = {
+            "M": "mining_level",
+            "S": "speed_level",
+            "C": "cargo_level",
+        }.get(str(stat).upper())
+        if not level_attr:
+            return None
+        value = getattr(panel, level_attr, None)
+        return int(value) if value is not None else None
+
+    @classmethod
+    def _live_cost_is_plausible_for_action(cls, scanned_panel, live_panel, stat: str) -> bool:
+        scanned_cost = cls._panel_cost_for_stat(scanned_panel, stat)
+        live_cost = cls._panel_cost_for_stat(live_panel, stat)
+        scanned_level = cls._panel_level_for_stat(scanned_panel, stat)
+        live_level = cls._panel_level_for_stat(live_panel, stat)
+        if scanned_cost is None or live_cost is None:
+            return True
+        if scanned_level is None or live_level is None:
+            return True
+        if int(scanned_level) != int(live_level):
+            return True
+        return int(live_cost) >= int(scanned_cost)
+
     def _collect_snapshots(self, count: int):
         snapshots = []
         for _ in range(max(1, count)):
@@ -273,22 +301,25 @@ class PlanetsTask:
             decision = choose_planet_upgrade(snapshot, self.config)
             if decision is None:
                 break
-            target_before = snapshot.scanned_planets.get(decision.planet_id, snapshot.current_planet)
+            scanned_target = snapshot.scanned_planets.get(decision.planet_id)
+            target_before = scanned_target or snapshot.current_planet
             navigated = True
             if scan.order:
                 navigated = navigator.go_to_planet(decision.planet_id, scan.order, scan.planets)
             live_target_panel = None
+            live_cost_plausible = True
             if navigated:
                 live_target_panel = self.reader.read()
                 if not self._panel_matches_expected(live_target_panel, decision.planet_id, target_before):
                     navigated = False
                 else:
+                    live_cost_plausible = self._live_cost_is_plausible_for_action(scanned_target, live_target_panel, decision.stat)
                     target_before = live_target_panel
                     snapshot.current_planet = live_target_panel
                     snapshot.scanned_planets[decision.planet_id] = live_target_panel
             live_cost = self._panel_cost_for_stat(target_before, decision.stat)
             affordable = live_cost is not None and snapshot.cash is not None and live_cost <= int(snapshot.cash)
-            executed = bool(navigated and affordable and self.actions.increase_planet_stat(decision.stat))
+            executed = bool(navigated and live_cost_plausible and affordable and self.actions.increase_planet_stat(decision.stat))
             step_after = None
             verified = False
             if executed:

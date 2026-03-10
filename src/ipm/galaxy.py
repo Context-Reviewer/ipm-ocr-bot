@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field, replace
 
+from .domain_data import PLANET_NAMES, normalize_planet_name
 from .state import PlanetPanelState
 
 
@@ -21,6 +22,16 @@ def _normalize_panel_id(panel: PlanetPanelState, planet_id: int) -> PlanetPanelS
     suffix = _title_suffix(panel.title)
     title = f"{planet_id}. {suffix}".strip() if suffix else str(planet_id)
     return replace(panel, planet_id=planet_id, title=title)
+
+
+_PLANET_ID_BY_NAME = {name: index + 1 for index, name in enumerate(PLANET_NAMES)}
+
+
+def _known_title_planet_id(title: str) -> int | None:
+    canonical = normalize_planet_name(title)
+    if not canonical:
+        return None
+    return _PLANET_ID_BY_NAME.get(canonical)
 
 
 @dataclass(slots=True)
@@ -78,6 +89,13 @@ class PlanetNavigator:
             nxt = self.step(1)
             if nxt is None:
                 break
+            known_title_id = _known_title_planet_id(nxt.title)
+            if known_title_id is not None and scan.order:
+                # Crossing from the tail of the local cycle back to an earlier known
+                # planet is a loop boundary, not a new synthetic sequential id.
+                if known_title_id == scan.order[0] or known_title_id in scan.planets or known_title_id < scan.order[-1]:
+                    scan.complete_loop = True
+                    break
             expected_id = scan.order[-1] + 1
             if nxt.planet_id is None:
                 next_name = _title_name(nxt.title)

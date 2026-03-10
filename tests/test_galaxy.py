@@ -59,3 +59,15 @@ def test_scan_normalizes_zero_id_to_expected_next_planet():
     scan = PlanetNavigator(FakeReader(panels), FakeActions(), max_planets=3).scan_visible_planets()
     assert scan.order == [8, 9, 10]
     assert scan.planets[10].title == "10. SOLVEIG"
+
+
+def test_scan_stops_at_known_planet_wrap_instead_of_inventing_high_ids():
+    panels = [
+        PlanetPanelState(planet_id=3, title="3. ANADIUS"),
+        PlanetPanelState(planet_id=4, title="4. DHOLEN"),
+        PlanetPanelState(planet_id=1, title="1. BALOR"),
+    ]
+    scan = PlanetNavigator(FakeReader(panels), FakeActions(), max_planets=4).scan_visible_planets()
+    assert scan.complete_loop is True
+    assert scan.order == [3, 4]
+    assert 5 not in scan.planets

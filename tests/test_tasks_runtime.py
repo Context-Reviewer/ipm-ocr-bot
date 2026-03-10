@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 from ipm.config import PolicyConfig, RuntimeConfig
 from ipm.state import GameSnapshot, OreRowState, PlanetPanelState, SellDialogState
 from ipm.tasks import OresTask, PlanetsTask
@@ -87,6 +89,12 @@ class FakePlanetReader:
         return value
 
 
+def _runtime_config_without_starfield_probe(*, policy=None):
+    runtime_config = RuntimeConfig(policy=policy or PolicyConfig())
+    runtime_config.starfield.enable_click_probe = False
+    return runtime_config
+
+
 def test_planets_task_executes_upgrade_decision(monkeypatch):
     before = GameSnapshot(
         cash=500,
@@ -119,7 +127,7 @@ def test_planets_task_executes_upgrade_decision(monkeypatch):
         reader=reader,
         state_reader=FakeStateReader([before, after]),
         actions=actions,
-        config=RuntimeConfig(policy=PolicyConfig(max_planet_upgrades_per_task=1)),
+        config=_runtime_config_without_starfield_probe(policy=PolicyConfig(max_planet_upgrades_per_task=1)),
     )
     result = task.run()
     assert result.details["decision"]["stat"] == "S"
@@ -139,7 +147,7 @@ def test_planets_task_fails_fast_when_planet_panel_never_becomes_readable(monkey
         reader=reader,
         state_reader=FakeStateReader([GameSnapshot(cash=500, current_planet=unreadable)]),
         actions=actions,
-        config=RuntimeConfig(policy=PolicyConfig(planet_panel_open_attempts=3)),
+        config=_runtime_config_without_starfield_probe(policy=PolicyConfig(planet_panel_open_attempts=3)),
     )
     result = task.run()
     assert result.ok is False
@@ -187,7 +195,7 @@ def test_planets_task_replans_for_multiple_verified_upgrades(monkeypatch):
             ]
         ),
         actions=actions,
-        config=RuntimeConfig(),
+        config=_runtime_config_without_starfield_probe(),
     )
     result = task.run()
     assert result.ok is True
@@ -228,12 +236,115 @@ def test_planets_task_verifies_upgrade_from_cost_increase_when_level_ocr_misses(
         reader=reader,
         state_reader=FakeStateReader([before, after]),
         actions=actions,
-        config=RuntimeConfig(policy=PolicyConfig(max_planet_upgrades_per_task=1)),
+        config=_runtime_config_without_starfield_probe(policy=PolicyConfig(max_planet_upgrades_per_task=1)),
     )
     result = task.run()
     assert result.details["decision"]["stat"] == "C"
     assert result.details["executed"] is True
     assert result.details["verified"] is True
+
+
+def test_planets_task_preserves_wrapped_planet_identity_during_scan():
+    class CycleWorld:
+        def __init__(self):
+            self.order = [3, 4, 1]
+            self.index = 0
+            self.upgraded = False
+            self.panels = {
+                1: PlanetPanelState(
+                    planet_id=1,
+                    title="1. BALOR",
+                    mining_level=43,
+                    speed_level=40,
+                    cargo_level=25,
+                    mining_cost=305200,
+                    speed_cost=138920,
+                    cargo_cost=2710,
+                ),
+                3: PlanetPanelState(
+                    planet_id=3,
+                    title="3. ANADIUS",
+                    mining_level=33,
+                    speed_level=23,
+                    cargo_level=18,
+                    mining_cost=110690,
+                    speed_cost=8030,
+                    cargo_cost=2160,
+                ),
+                4: PlanetPanelState(
+                    planet_id=4,
+                    title="4. DHOLEN",
+                    mining_level=31,
+                    speed_level=26,
+                    cargo_level=18,
+                    mining_cost=163750,
+                    speed_cost=44100,
+                    cargo_cost=5410,
+                ),
+            }
+
+        def current_panel(self):
+            panel = self.panels[self.order[self.index]]
+            if self.upgraded and panel.planet_id == 4:
+                return replace(panel, cargo_level=19, cargo_cost=6000)
+            return panel
+
+        def step(self, delta):
+            self.index = (self.index + delta) % len(self.order)
+
+    class CycleReader:
+        def __init__(self, world):
+            self.world = world
+
+        def read(self):
+            return self.world.current_panel()
+
+    class CycleStateReader:
+        def __init__(self, world):
+            self.world = world
+
+        def read(self):
+            return GameSnapshot(cash=7660, current_planet=self.world.current_panel())
+
+    class CycleActions(FakeActions):
+        def __init__(self, world):
+            super().__init__()
+            self.world = world
+
+        def next_planet(self):
+            self.calls.append(("next_planet",))
+            self.world.step(1)
+            return True
+
+        def previous_planet(self):
+            self.calls.append(("previous_planet",))
+            self.world.step(-1)
+            return True
+
+        def increase_planet_stat(self, stat):
+            self.calls.append(("increase_planet_stat", stat))
+            if self.world.current_panel().planet_id == 4 and stat == "C":
+                self.world.upgraded = True
+                return True
+            return False
+
+    world = CycleWorld()
+    actions = CycleActions(world)
+    task = PlanetsTask(
+        reader=CycleReader(world),
+        state_reader=CycleStateReader(world),
+        actions=actions,
+        config=_runtime_config_without_starfield_probe(policy=PolicyConfig(max_planet_upgrades_per_task=1)),
+    )
+    result = task.run()
+    assert result.ok is True
+    assert result.details["decision"]["planet_id"] == 4
+    assert result.details["decision"]["stat"] == "C"
+    assert result.details["verified"] is True
+    assert result.details["planet_order"] == [3, 4]
+    assert result.details["steps"][0]["before_planet"]["title"] == "4. DHOLEN"
+    assert result.details["steps"][0]["after_planet"]["planet_id"] == 4
+    assert result.details["steps"][0]["after_planet"]["cargo_level"] == 19
 
 
 def test_ores_task_executes_sell_decision():

@@ -179,17 +179,65 @@ def test_go_to_planet_can_reuse_current_panel_without_initial_read():
         3: PlanetPanelState(planet_id=3, title="3. ANADIUS"),
         4: PlanetPanelState(planet_id=4, title="4. ACHERON"),
     }
-    reader = FakeReader(
-        [
-            PlanetPanelState(planet_id=2, title="2. DRASTA"),
-            PlanetPanelState(planet_id=1, title="1. BALOR"),
-        ]
-    )
-    navigator = PlanetNavigator(reader, FakeActions(), max_planets=4)
+    world = type(
+        "World",
+        (),
+        {
+            "panels": [
+                PlanetPanelState(planet_id=1, title="1. BALOR"),
+                PlanetPanelState(planet_id=2, title="2. DRASTA"),
+                PlanetPanelState(planet_id=3, title="3. ANADIUS"),
+                PlanetPanelState(planet_id=4, title="4. ACHERON"),
+            ],
+            "index": 2,
+        },
+    )()
+    reader = CycleReader(world)
+    navigator = PlanetNavigator(reader, CycleActions(world), max_planets=4)
     assert navigator.go_to_planet(
         1,
         [1, 2, 3, 4],
         known,
         current_panel=PlanetPanelState(planet_id=3, title="3. ANADIUS"),
     ) is True
-    assert reader.read_calls == 2
+    assert reader.read().planet_id == 1
+
+
+def test_go_to_planet_restores_with_single_read_after_failed_primary_route():
+    known = {
+        1: PlanetPanelState(planet_id=1, title="1. BALOR"),
+        2: PlanetPanelState(planet_id=2, title="2. DRASTA"),
+        3: PlanetPanelState(planet_id=3, title="3. ANADIUS"),
+        4: PlanetPanelState(planet_id=4, title="4. ACHERON"),
+    }
+
+    class World:
+        def __init__(self):
+            self.panels = [
+                PlanetPanelState(planet_id=3, title="3. ANADIUS"),
+                PlanetPanelState(planet_id=4, title="4. ACHERON"),
+                PlanetPanelState(planet_id=1, title="1. BALOR"),
+                PlanetPanelState(planet_id=2, title="2. DRASTA"),
+            ]
+            self.index = 0
+
+    class FlakyActions(CycleActions):
+        def __init__(self, world):
+            super().__init__(world)
+            self.next_calls = 0
+
+        def next_planet(self):
+            self.next_calls += 1
+            self.world.index = (self.world.index + 2) % len(self.world.panels)
+            return True
+
+        def previous_planet(self):
+            self.world.index = (self.world.index - 2) % len(self.world.panels)
+            return True
+
+    world = World()
+    reader = CycleReader(world)
+    actions = FlakyActions(world)
+    navigator = PlanetNavigator(reader, actions, max_planets=4)
+    assert navigator.go_to_planet(1, [1, 2, 3, 4], known, current_panel=world.panels[world.index]) is False
+    assert world.index == 0

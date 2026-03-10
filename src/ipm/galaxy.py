@@ -51,6 +51,9 @@ class PlanetNavigator:
     def current(self) -> PlanetPanelState:
         return self.reader.read()
 
+    def _move(self, direction: int) -> bool:
+        return bool(self.actions.next_planet() if direction >= 0 else self.actions.previous_planet())
+
     def _resolve_current_id(
         self,
         panel: PlanetPanelState,
@@ -74,8 +77,7 @@ class PlanetNavigator:
         return None
 
     def step(self, direction: int) -> PlanetPanelState | None:
-        ok = self.actions.next_planet() if direction >= 0 else self.actions.previous_planet()
-        if not ok:
+        if not self._move(direction):
             return None
         return self.reader.read()
 
@@ -93,16 +95,14 @@ class PlanetNavigator:
         order: list[int],
         known_planets: dict[int, PlanetPanelState] | None,
         target_id: int,
+        current_panel: PlanetPanelState | None = None,
     ) -> tuple[bool, int, PlanetPanelState | None]:
         moved_steps = 0
-        final_panel = None
         for _ in range(steps):
-            moved = self.step(direction)
-            if moved is None:
-                return False, moved_steps, final_panel
+            if not self._move(direction):
+                return False, moved_steps, current_panel
             moved_steps += 1
-            final_panel = moved
-        final = final_panel if final_panel is not None else self.current()
+        final = current_panel if moved_steps == 0 and current_panel is not None else self.current()
         final_id = self._resolve_current_id(final, order, known_planets)
         return final_id == target_id, moved_steps, final
 
@@ -223,17 +223,16 @@ class PlanetNavigator:
             order=order,
             known_planets=known_planets,
             target_id=target_id,
+            current_panel=current,
         )
         if success:
             return True
         if alternate[1] == primary[1] and alternate[0] == primary[0]:
             return False
-        restored_panel = current
         for _ in range(moved_steps):
-            restored = self.step(-primary[0])
-            if restored is None:
+            if not self._move(-primary[0]):
                 return False
-            restored_panel = restored
+        restored_panel = current if moved_steps == 0 else self.current()
         restored_id = self._resolve_current_id(restored_panel, order, known_planets)
         if restored_id != current_id:
             return False
@@ -243,5 +242,6 @@ class PlanetNavigator:
             order=order,
             known_planets=known_planets,
             target_id=target_id,
+            current_panel=restored_panel,
         )
         return success

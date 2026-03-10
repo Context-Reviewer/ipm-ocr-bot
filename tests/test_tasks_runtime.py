@@ -122,7 +122,7 @@ def test_planets_task_executes_upgrade_decision(monkeypatch):
     )
     monkeypatch.setattr("ipm.tasks.planets.PlanetNavigator", FakeNavigator)
     actions = FakeActions()
-    reader = FakePlanetReader([before.current_planet, before.current_planet, after.current_planet])
+    reader = FakePlanetReader([before.current_planet, before.current_planet, before.current_planet])
     task = PlanetsTask(
         reader=reader,
         state_reader=FakeStateReader([before, after]),
@@ -184,7 +184,7 @@ def test_planets_task_replans_for_multiple_verified_upgrades(monkeypatch):
     )
     monkeypatch.setattr("ipm.tasks.planets.PlanetNavigator", FakeNavigator)
     actions = FakeActions()
-    reader = FakePlanetReader([start, start, after_first, after_second])
+    reader = FakePlanetReader([start, start, start, after_first, after_second])
     task = PlanetsTask(
         reader=reader,
         state_reader=FakeStateReader(
@@ -237,7 +237,7 @@ def test_planets_task_retries_after_reads_for_later_same_planet_upgrade(monkeypa
     )
     monkeypatch.setattr("ipm.tasks.planets.PlanetNavigator", FakeNavigator)
     actions = FakeActions()
-    reader = FakePlanetReader([before, before, stale_after, verified_after])
+    reader = FakePlanetReader([before, before, before])
     task = PlanetsTask(
         reader=reader,
         state_reader=FakeStateReader(
@@ -288,7 +288,7 @@ def test_planets_task_verifies_upgrade_from_cost_increase_when_level_ocr_misses(
     )
     monkeypatch.setattr("ipm.tasks.planets.PlanetNavigator", FakeNavigator)
     actions = FakeActions()
-    reader = FakePlanetReader([before.current_planet, before.current_planet, after.current_planet])
+    reader = FakePlanetReader([before.current_planet, before.current_planet, before.current_planet])
     task = PlanetsTask(
         reader=reader,
         state_reader=FakeStateReader([before, after]),
@@ -402,6 +402,61 @@ def test_planets_task_preserves_wrapped_planet_identity_during_scan():
     assert result.details["steps"][0]["before_planet"]["title"] == "4. DHOLEN"
     assert result.details["steps"][0]["after_planet"]["planet_id"] == 4
     assert result.details["steps"][0]["after_planet"]["cargo_level"] == 19
+
+
+def test_planets_task_revalidates_live_target_cost_before_upgrade(monkeypatch):
+    stale_scan_panel = PlanetPanelState(
+        planet_id=4,
+        title="4. DHOLEN",
+        mining_level=31,
+        speed_level=26,
+        cargo_level=18,
+        mining_cost=164,
+        speed_cost=44,
+        cargo_cost=5,
+    )
+    live_panel = PlanetPanelState(
+        planet_id=4,
+        title="4. DHOLEN",
+        mining_level=31,
+        speed_level=26,
+        cargo_level=18,
+        mining_cost=163750,
+        speed_cost=44100,
+        cargo_cost=5410,
+    )
+
+    class Navigator:
+        def __init__(self, reader, actions, *, max_planets=16):
+            self.reader = reader
+            self.actions = actions
+
+        def scan_visible_planets(self):
+            return type(
+                "Scan",
+                (),
+                {"planets": {4: stale_scan_panel}, "order": [4], "complete_loop": True},
+            )()
+
+        def go_to_planet(self, target_id, order, known_planets=None):
+            self.actions.calls.append(("go_to_planet", target_id, tuple(order)))
+            return target_id == 4
+
+    monkeypatch.setattr("ipm.tasks.planets.PlanetNavigator", Navigator)
+    actions = FakeActions()
+    reader = FakePlanetReader([stale_scan_panel, live_panel])
+    task = PlanetsTask(
+        reader=reader,
+        state_reader=FakeStateReader([GameSnapshot(cash=100, current_planet=live_panel)]),
+        actions=actions,
+        config=_runtime_config_without_starfield_probe(policy=PolicyConfig(max_planet_upgrades_per_task=1)),
+    )
+    result = task.run()
+    assert result.ok is False
+    assert result.details["decision"]["planet_id"] == 4
+    assert result.details["executed"] is False
+    assert result.details["verified"] is False
+    assert ("increase_planet_stat", "C") not in actions.calls
 
 
 def test_ores_task_executes_sell_decision():

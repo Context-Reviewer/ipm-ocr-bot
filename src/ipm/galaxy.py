@@ -78,6 +78,12 @@ class PlanetNavigator:
             return None
         return self.reader.read()
 
+    def _restore_previous_panel(self) -> None:
+        try:
+            self.step(-1)
+        except Exception:
+            return
+
     def scan_visible_planets(self) -> GalaxyScan:
         scan = GalaxyScan()
         first = self.current()
@@ -94,6 +100,7 @@ class PlanetNavigator:
                 # Crossing from the tail of the local cycle back to an earlier known
                 # planet is a loop boundary, not a new synthetic sequential id.
                 if known_title_id == scan.order[0] or known_title_id in scan.planets or known_title_id < scan.order[-1]:
+                    self._restore_previous_panel()
                     scan.complete_loop = True
                     break
             expected_id = scan.order[-1] + 1
@@ -109,12 +116,15 @@ class PlanetNavigator:
                         None,
                     )
                     if matched_id == scan.order[0]:
+                        self._restore_previous_panel()
                         scan.complete_loop = True
                         break
                     if matched_id is not None:
+                        self._restore_previous_panel()
                         break
                 inferred_id = expected_id
                 if inferred_id in scan.planets:
+                    self._restore_previous_panel()
                     break
                 nxt = _normalize_panel_id(nxt, inferred_id)
             elif nxt.planet_id in scan.planets:
@@ -123,22 +133,30 @@ class PlanetNavigator:
                 if next_name and known_name and next_name != known_name:
                     inferred_id = expected_id
                     if inferred_id in scan.planets:
+                        self._restore_previous_panel()
                         break
                     nxt = _normalize_panel_id(nxt, inferred_id)
+                else:
+                    self._restore_previous_panel()
+                    break
             elif nxt.planet_id <= 0 or nxt.planet_id < expected_id:
                 inferred_id = expected_id
                 if inferred_id in scan.planets:
+                    self._restore_previous_panel()
                     break
                 nxt = _normalize_panel_id(nxt, inferred_id)
             elif nxt.planet_id > expected_id + 1:
                 inferred_id = expected_id
                 if inferred_id in scan.planets:
+                    self._restore_previous_panel()
                     break
                 nxt = _normalize_panel_id(nxt, inferred_id)
             if nxt.planet_id == scan.order[0]:
+                self._restore_previous_panel()
                 scan.complete_loop = True
                 break
             if nxt.planet_id in scan.planets:
+                self._restore_previous_panel()
                 break
             scan.planets[nxt.planet_id] = nxt
             scan.order.append(nxt.planet_id)

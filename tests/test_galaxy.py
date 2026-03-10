@@ -21,6 +21,27 @@ class FakeReader:
         return value
 
 
+class CycleActions:
+    def __init__(self, world):
+        self.world = world
+
+    def next_planet(self):
+        self.world.index = (self.world.index + 1) % len(self.world.panels)
+        return True
+
+    def previous_planet(self):
+        self.world.index = (self.world.index - 1) % len(self.world.panels)
+        return True
+
+
+class CycleReader:
+    def __init__(self, world):
+        self.world = world
+
+    def read(self):
+        return self.world.panels[self.world.index]
+
+
 def test_scan_infers_next_planet_when_title_name_disagrees_with_duplicate_id():
     panels = [
         PlanetPanelState(planet_id=1, title="1. BALOR"),
@@ -71,3 +92,24 @@ def test_scan_stops_at_known_planet_wrap_instead_of_inventing_high_ids():
     assert scan.complete_loop is True
     assert scan.order == [3, 4]
     assert 5 not in scan.planets
+
+
+def test_scan_restores_last_valid_panel_before_go_to_planet_after_wrap():
+    world = type(
+        "World",
+        (),
+        {
+            "panels": [
+                PlanetPanelState(planet_id=4, title="4. DHOLEN"),
+                PlanetPanelState(planet_id=5, title="5. VERR"),
+                PlanetPanelState(planet_id=6, title="6. NEWTON"),
+                PlanetPanelState(planet_id=1, title="1. BALOR"),
+            ],
+            "index": 0,
+        },
+    )()
+    navigator = PlanetNavigator(CycleReader(world), CycleActions(world), max_planets=4)
+    scan = navigator.scan_visible_planets()
+    assert scan.order == [4, 5, 6]
+    assert navigator.current().planet_id == 6
+    assert navigator.go_to_planet(5, scan.order, scan.planets) is True

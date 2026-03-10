@@ -106,6 +106,31 @@ class PlanetsTask:
                 return "not_starfield_ready"
         return None
 
+    @staticmethod
+    def _panel_matches_expected(panel, expected_planet_id: int, expected_panel) -> bool:
+        if panel is None:
+            return False
+        panel_id = getattr(panel, "planet_id", None)
+        if panel_id is not None and int(panel_id) == int(expected_planet_id):
+            return True
+        expected_title = normalize_planet_name(getattr(expected_panel, "title", "")) if expected_panel is not None else ""
+        current_title = normalize_planet_name(getattr(panel, "title", ""))
+        return bool(expected_title and current_title and expected_title == current_title)
+
+    @staticmethod
+    def _panel_cost_for_stat(panel, stat: str) -> int | None:
+        if panel is None:
+            return None
+        cost_attr = {
+            "M": "mining_cost",
+            "S": "speed_cost",
+            "C": "cargo_cost",
+        }.get(str(stat).upper())
+        if not cost_attr:
+            return None
+        value = getattr(panel, cost_attr, None)
+        return int(value) if value is not None else None
+
     def _collect_snapshots(self, count: int):
         snapshots = []
         for _ in range(max(1, count)):
@@ -252,7 +277,18 @@ class PlanetsTask:
             navigated = True
             if scan.order:
                 navigated = navigator.go_to_planet(decision.planet_id, scan.order, scan.planets)
-            executed = bool(navigated and self.actions.increase_planet_stat(decision.stat))
+            live_target_panel = None
+            if navigated:
+                live_target_panel = self.reader.read()
+                if not self._panel_matches_expected(live_target_panel, decision.planet_id, target_before):
+                    navigated = False
+                else:
+                    target_before = live_target_panel
+                    snapshot.current_planet = live_target_panel
+                    snapshot.scanned_planets[decision.planet_id] = live_target_panel
+            live_cost = self._panel_cost_for_stat(target_before, decision.stat)
+            affordable = live_cost is not None and snapshot.cash is not None and live_cost <= int(snapshot.cash)
+            executed = bool(navigated and affordable and self.actions.increase_planet_stat(decision.stat))
             step_after = None
             verified = False
             if executed:

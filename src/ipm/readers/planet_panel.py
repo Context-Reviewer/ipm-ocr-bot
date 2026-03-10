@@ -156,6 +156,19 @@ class PlanetPanelReader:
             title_backend,
         )
 
+    def _read_scan_title_retry(self) -> tuple[str, str]:
+        image = self._capture_key("PLANET_TITLE")
+        if image is None:
+            return "", ""
+        result = perception_backend.read_text_from_backends(
+            self.perception,
+            image,
+            prompt=self.config.perception.prompt_planet_title,
+            mode="planet_title",
+            allowed_backend_names=("legacy",),
+        )
+        return self._sanitize_title(result.value), result.backend
+
     def _read_panel(self) -> tuple[ParsedPlanetPanel, str]:
         image = self._capture_key("PLANET_PANEL_TEXT")
         if image is None:
@@ -233,8 +246,21 @@ class PlanetPanelReader:
                 if value is not None
             )
             seed_is_enough = self._panel_has_enough_data(parsed_panel)
-            title_is_trustworthy = self._scan_seed_title_is_trustworthy(parsed_panel)
             clearly_unaffordable = bool(scan_costs) and all(int(cost) > int(scan_cash) for cost in scan_costs)
+            title_is_trustworthy = self._scan_seed_title_is_trustworthy(parsed_panel)
+            if seed_is_enough and clearly_unaffordable and not title_is_trustworthy:
+                retry_title, retry_backend = self._read_scan_title_retry()
+                if retry_title:
+                    retry_match = re.search(r"^\s*(\d+)", retry_title)
+                    parsed_panel = ParsedPlanetPanel(
+                        title=retry_title,
+                        planet_id=int(retry_match.group(1)) if retry_match else None,
+                        mining_cost=parsed_panel.mining_cost,
+                        speed_cost=parsed_panel.speed_cost,
+                        cargo_cost=parsed_panel.cargo_cost,
+                    )
+                    title_backend = retry_backend or title_backend
+                    title_is_trustworthy = self._scan_seed_title_is_trustworthy(parsed_panel)
             if not (seed_is_enough and title_is_trustworthy and clearly_unaffordable):
                 panel_parse, panel_title_backend = self._read_panel()
                 parsed_panel = panel_parse

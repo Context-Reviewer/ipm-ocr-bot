@@ -405,6 +405,42 @@ def test_planet_panel_reader_scan_mode_prefers_direct_title_and_cost_reads():
     assert ("planet_panel" not in [mode for _prompt, mode in perception.calls])
 
 
+def test_planet_panel_reader_scan_mode_uses_legacy_title_retry_before_panel_parse():
+    cfg = RuntimeConfig()
+    rects = RectStore(
+        path=None,
+        rects={
+            "PLANET_PANEL_TEXT": (0, 0, 1, 1),
+            "PLANET_TITLE": (0, 0, 1, 1),
+            "UPGRADE_MINING": (0, 0, 1, 1),
+            "UPGRADE_SPEED": (0, 0, 1, 1),
+            "UPGRADE_CARGO": (0, 0, 1, 1),
+        },
+    )
+    perception = HybridPerceptionBackend(
+        primary=FakeBackend(
+            name="windows",
+            mapping={
+                (cfg.perception.prompt_planet_title, "planet_title"): "5. NEWTON",
+                (cfg.perception.prompt_numeric, "numeric"): "999999",
+            },
+            fail_panel_text=True,
+        ),
+        fallback=FakeBackend(
+            name="legacy",
+            mapping={
+                (cfg.perception.prompt_planet_title, "planet_title"): "6. NEWTON",
+            },
+        ),
+    )
+    state = PlanetPanelReader(cfg, rects, FakeCapture(), perception).read_for_scan(cash=100)
+    assert state.planet_id == 6
+    assert state.title == "6. NEWTON"
+    assert state.mining_cost == 999999
+    assert state.speed_cost == 999999
+    assert state.cargo_cost == 999999
+
+
 def test_planet_panel_reader_scan_mode_falls_back_to_panel_parse_when_direct_seed_is_incomplete():
     cfg = RuntimeConfig()
     rects = RectStore(

@@ -329,6 +329,8 @@ class PlanetsTask:
         snapshot = cash_snapshot if cash_snapshot is not None else self._read_planet_snapshot()
         if getattr(cash_snapshot, "cash", None) is not None:
             snapshot.cash = cash_snapshot.cash
+        if not self._panel_readable(getattr(snapshot, "current_planet", None)) and scan.final_panel is not None:
+            snapshot.current_planet = scan.final_panel
         snapshot.scanned_planets = dict(scan.planets)
         snapshot.planet_order = list(scan.order)
         max_steps = max(1, int(getattr(self.config.policy, "max_planet_upgrades_per_task", 1)))

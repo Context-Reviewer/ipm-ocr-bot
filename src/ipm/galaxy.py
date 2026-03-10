@@ -39,6 +39,7 @@ class GalaxyScan:
     planets: dict[int, PlanetPanelState] = field(default_factory=dict)
     order: list[int] = field(default_factory=list)
     complete_loop: bool = False
+    final_panel: PlanetPanelState | None = None
 
 
 class PlanetNavigator:
@@ -78,11 +79,11 @@ class PlanetNavigator:
             return None
         return self.reader.read()
 
-    def _restore_previous_panel(self) -> None:
+    def _restore_previous_panel(self) -> bool:
         try:
-            self.step(-1)
+            return bool(self.actions.previous_planet())
         except Exception:
-            return
+            return False
 
     def _follow_route(
         self,
@@ -112,6 +113,7 @@ class PlanetNavigator:
             return scan
         scan.planets[first.planet_id] = first
         scan.order.append(first.planet_id)
+        scan.final_panel = first
         for _ in range(self.max_planets - 1):
             nxt = self.step(1)
             if nxt is None:
@@ -181,6 +183,7 @@ class PlanetNavigator:
                 break
             scan.planets[nxt.planet_id] = nxt
             scan.order.append(nxt.planet_id)
+            scan.final_panel = nxt
         return scan
 
     def go_to_planet(

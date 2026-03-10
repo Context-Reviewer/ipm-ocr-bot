@@ -101,6 +101,7 @@ def test_scan_stops_at_known_planet_wrap_instead_of_inventing_high_ids():
     assert scan.complete_loop is True
     assert scan.order == [3, 4]
     assert 5 not in scan.planets
+    assert scan.final_panel.planet_id == 4
 
 
 def test_scan_restores_last_valid_panel_before_go_to_planet_after_wrap():
@@ -167,7 +168,8 @@ def test_scan_visible_planets_can_reuse_initial_panel_without_extra_current_read
     )
     scan = PlanetNavigator(reader, FakeActions(), max_planets=4).scan_visible_planets(initial_panel=first)
     assert scan.order == [1, 2, 3]
-    assert reader.read_calls == 4
+    assert scan.final_panel.planet_id == 3
+    assert reader.read_calls == 3
 
 
 def test_go_to_planet_can_reuse_current_panel_without_initial_read():

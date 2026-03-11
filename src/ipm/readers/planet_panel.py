@@ -34,6 +34,26 @@ class PlanetPanelReader:
         result = self.perception.read_text(image, prompt=prompt, mode=mode)
         return result.value.strip(), result.backend
 
+    def _read_key_text_from_backends(
+        self,
+        key: str,
+        *,
+        prompt: str,
+        mode: str,
+        allowed_backend_names: tuple[str, ...],
+    ) -> tuple[str, str]:
+        image = self._capture_key(key)
+        if image is None:
+            return "", ""
+        result = perception_backend.read_text_from_backends(
+            self.perception,
+            image,
+            prompt=prompt,
+            mode=mode,
+            allowed_backend_names=allowed_backend_names,
+        )
+        return result.value.strip(), result.backend
+
     @staticmethod
     def _panel_has_enough_data(panel: ParsedPlanetPanel) -> bool:
         cost_count = sum(
@@ -157,17 +177,52 @@ class PlanetPanelReader:
         )
 
     def _read_scan_title_retry(self) -> tuple[str, str]:
-        image = self._capture_key("PLANET_TITLE")
-        if image is None:
-            return "", ""
-        result = perception_backend.read_text_from_backends(
-            self.perception,
-            image,
+        value, backend = self._read_key_text_from_backends(
+            "PLANET_TITLE",
             prompt=self.config.perception.prompt_planet_title,
             mode="planet_title",
             allowed_backend_names=("legacy",),
         )
-        return self._sanitize_title(result.value), result.backend
+        return self._sanitize_title(value), backend
+
+    def _retry_untrusted_affordable_scan_costs(
+        self,
+        parsed_panel: ParsedPlanetPanel,
+        *,
+        scan_cash: int,
+    ) -> ParsedPlanetPanel:
+        retried_costs = {
+            "mining_cost": parsed_panel.mining_cost,
+            "speed_cost": parsed_panel.speed_cost,
+            "cargo_cost": parsed_panel.cargo_cost,
+        }
+        field_keys = {
+            "mining_cost": "UPGRADE_MINING",
+            "speed_cost": "UPGRADE_SPEED",
+            "cargo_cost": "UPGRADE_CARGO",
+        }
+        for field_name, current_value in tuple(retried_costs.items()):
+            if current_value is None or int(current_value) > int(scan_cash):
+                continue
+            retry_text, _backend = self._read_key_text_from_backends(
+                field_keys[field_name],
+                prompt=self.config.perception.prompt_numeric,
+                mode="numeric",
+                allowed_backend_names=("legacy",),
+            )
+            retry_value = self._sanitize_cost(parse_compact_number(retry_text), field_name=field_name)
+            if retry_value is not None:
+                retried_costs[field_name] = retry_value
+        return ParsedPlanetPanel(
+            title=parsed_panel.title,
+            planet_id=parsed_panel.planet_id,
+            mining_level=parsed_panel.mining_level,
+            speed_level=parsed_panel.speed_level,
+            cargo_level=parsed_panel.cargo_level,
+            mining_cost=retried_costs["mining_cost"],
+            speed_cost=retried_costs["speed_cost"],
+            cargo_cost=retried_costs["cargo_cost"],
+        )
 
     def _read_panel(self) -> tuple[ParsedPlanetPanel, str]:
         image = self._capture_key("PLANET_PANEL_TEXT")
@@ -257,14 +312,17 @@ class PlanetPanelReader:
             parsed_panel, title_backend = self._read_panel()
         else:
             parsed_panel, title_backend = self._read_scan_seed()
+            seed_is_enough = self._panel_has_enough_data(parsed_panel)
+            title_is_trustworthy = self._scan_seed_title_is_trustworthy(parsed_panel)
+            if seed_is_enough and not title_is_trustworthy:
+                parsed_panel = self._retry_untrusted_affordable_scan_costs(parsed_panel, scan_cash=int(scan_cash))
+                title_is_trustworthy = self._scan_seed_title_is_trustworthy(parsed_panel)
             scan_costs = tuple(
                 value
                 for value in (parsed_panel.mining_cost, parsed_panel.speed_cost, parsed_panel.cargo_cost)
                 if value is not None
             )
-            seed_is_enough = self._panel_has_enough_data(parsed_panel)
             clearly_unaffordable = bool(scan_costs) and all(int(cost) > int(scan_cash) for cost in scan_costs)
-            title_is_trustworthy = self._scan_seed_title_is_trustworthy(parsed_panel)
             if seed_is_enough and clearly_unaffordable and not title_is_trustworthy:
                 retry_title, retry_backend = self._read_scan_title_retry()
                 if retry_title:

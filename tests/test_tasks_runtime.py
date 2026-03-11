@@ -770,6 +770,26 @@ def test_planets_task_aggregates_scan_observability_classes_and_slow_panels(monk
                 "used_legacy_title_retry": True,
                 "suspicious_cost_retry_fields": ("mining_cost", "speed_cost", "cargo_cost"),
                 "escalation_reasons": ("suspicious_cost_retry", "legacy_title_retry"),
+                "title_trust": {
+                    "direct": {
+                        "raw_title": "5. NEWTON",
+                        "sanitized_title": "5. NEWTON",
+                        "normalized_title": "NEWTON",
+                        "planet_id": 5,
+                        "expected_planet_id": 6,
+                        "trustworthy": False,
+                        "trust_reason": "planet_id_mismatch",
+                    },
+                    "legacy_retry": {
+                        "raw_title": "6. NEWTON",
+                        "sanitized_title": "6. NEWTON",
+                        "normalized_title": "NEWTON",
+                        "planet_id": 6,
+                        "expected_planet_id": 6,
+                        "trustworthy": True,
+                        "trust_reason": "",
+                    },
+                },
                 "panel_class": "suspicious_cost_retry+legacy_title_retry",
             }
         ],
@@ -794,6 +814,8 @@ def test_planets_task_aggregates_scan_observability_classes_and_slow_panels(monk
     assert scan["slow_panel_class_counts"] == {"suspicious_cost_retry+legacy_title_retry": 1}
     assert scan["slow_panels"][0]["panel_class"] == "suspicious_cost_retry+legacy_title_retry"
     assert scan["slow_panels"][0]["escalation_reasons"] == ["suspicious_cost_retry", "legacy_title_retry"]
+    assert scan["slow_panels"][0]["title_trust"]["direct"]["trust_reason"] == "planet_id_mismatch"
+    assert scan["slow_panels"][0]["title_trust"]["legacy_retry"]["trustworthy"] is True
 
 
 def test_planets_task_aggregates_full_parse_escalation_reason_counts(monkeypatch):

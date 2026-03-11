@@ -126,6 +126,7 @@ class PlanetsTask:
                     "full_panel_parse_reason": payload.get("full_panel_parse_reason") or "",
                     "suspicious_cost_retry_fields": list(retry_fields),
                     "escalation_reasons": list(payload.get("escalation_reasons", ())),
+                    "title_trust": payload.get("title_trust"),
                     "panel_class": panel_class,
                 }
             )

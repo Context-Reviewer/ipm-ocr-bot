@@ -122,14 +122,29 @@ class PlanetPanelReader:
         return value
 
     @staticmethod
-    def _scan_seed_title_is_trustworthy(panel: ParsedPlanetPanel) -> bool:
+    def _scan_seed_title_trust_details(panel: ParsedPlanetPanel) -> dict[str, object]:
         canonical_name = normalize_planet_name(panel.title)
-        if not canonical_name:
-            return False
-        if panel.planet_id is None:
-            return True
-        expected_id = _PLANET_ID_BY_NAME.get(canonical_name)
-        return expected_id is None or int(panel.planet_id) == int(expected_id)
+        expected_id = _PLANET_ID_BY_NAME.get(canonical_name) if canonical_name else None
+        trustworthy = False
+        trust_reason = "unrecognized_title"
+        if canonical_name:
+            trustworthy = True
+            trust_reason = ""
+            if panel.planet_id is not None and expected_id is not None and int(panel.planet_id) != int(expected_id):
+                trustworthy = False
+                trust_reason = "planet_id_mismatch"
+        return {
+            "sanitized_title": panel.title,
+            "normalized_title": canonical_name,
+            "planet_id": panel.planet_id,
+            "expected_planet_id": expected_id,
+            "trustworthy": trustworthy,
+            "trust_reason": trust_reason,
+        }
+
+    @classmethod
+    def _scan_seed_title_is_trustworthy(cls, panel: ParsedPlanetPanel) -> bool:
+        return bool(cls._scan_seed_title_trust_details(panel).get("trustworthy"))
 
     def _panel_from_openai(self, image) -> tuple[ParsedPlanetPanel, str]:
         structured = perception_backend.read_planet_panel_json(self.perception, image)
@@ -148,13 +163,13 @@ class PlanetPanelReader:
             structured.backend,
         )
 
-    def _read_scan_seed(self) -> tuple[ParsedPlanetPanel, str]:
-        title_text, title_backend = self._read_key_text(
+    def _read_scan_seed(self) -> tuple[ParsedPlanetPanel, str, str]:
+        raw_title_text, title_backend = self._read_key_text(
             "PLANET_TITLE",
             prompt=self.config.perception.prompt_planet_title,
             mode="planet_title",
         )
-        title_text = self._sanitize_title(title_text)
+        title_text = self._sanitize_title(raw_title_text)
         match = re.search(r"^\s*(\d+)", title_text)
 
         mining_cost_text, _ = self._read_key_text(
@@ -181,16 +196,17 @@ class PlanetPanelReader:
                 cargo_cost=self._sanitize_cost(parse_compact_number(cargo_cost_text), field_name="cargo_cost"),
             ),
             title_backend,
+            raw_title_text,
         )
 
-    def _read_scan_title_retry(self) -> tuple[str, str]:
-        value, backend = self._read_key_text_from_backends(
+    def _read_scan_title_retry(self) -> tuple[str, str, str]:
+        raw_value, backend = self._read_key_text_from_backends(
             "PLANET_TITLE",
             prompt=self.config.perception.prompt_planet_title,
             mode="planet_title",
             allowed_backend_names=("legacy",),
         )
-        return self._sanitize_title(value), backend
+        return self._sanitize_title(raw_value), backend, raw_value
 
     def _retry_untrusted_affordable_scan_costs(
         self,
@@ -346,12 +362,17 @@ class PlanetPanelReader:
         scan_full_panel_parse_reason = ""
         scan_used_legacy_title_retry = False
         scan_retry_cost_fields: list[str] = []
+        scan_direct_title_raw = ""
+        scan_legacy_retry_title_raw = ""
+        scan_direct_title_trust: dict[str, object] = {}
+        scan_legacy_title_trust: dict[str, object] | None = None
         if scan_cash is None:
             parsed_panel, title_backend = self._read_panel()
         else:
-            parsed_panel, title_backend = self._read_scan_seed()
+            parsed_panel, title_backend, scan_direct_title_raw = self._read_scan_seed()
             seed_is_enough = self._panel_has_enough_data(parsed_panel)
-            title_is_trustworthy = self._scan_seed_title_is_trustworthy(parsed_panel)
+            scan_direct_title_trust = self._scan_seed_title_trust_details(parsed_panel)
+            title_is_trustworthy = bool(scan_direct_title_trust.get("trustworthy"))
             scan_seed_enough = seed_is_enough
             scan_title_trustworthy = title_is_trustworthy
             if seed_is_enough and not title_is_trustworthy:
@@ -359,7 +380,8 @@ class PlanetPanelReader:
                     parsed_panel,
                     scan_cash=int(scan_cash),
                 )
-                title_is_trustworthy = self._scan_seed_title_is_trustworthy(parsed_panel)
+                scan_direct_title_trust = self._scan_seed_title_trust_details(parsed_panel)
+                title_is_trustworthy = bool(scan_direct_title_trust.get("trustworthy"))
                 scan_title_trustworthy = title_is_trustworthy
             scan_costs = tuple(
                 value
@@ -368,19 +390,21 @@ class PlanetPanelReader:
             )
             clearly_unaffordable = bool(scan_costs) and all(int(cost) > int(scan_cash) for cost in scan_costs)
             if seed_is_enough and clearly_unaffordable and not title_is_trustworthy:
-                retry_title, retry_backend = self._read_scan_title_retry()
+                retry_title, retry_backend, scan_legacy_retry_title_raw = self._read_scan_title_retry()
                 if retry_title:
                     scan_used_legacy_title_retry = True
                     retry_match = re.search(r"^\s*(\d+)", retry_title)
-                    parsed_panel = ParsedPlanetPanel(
+                    retry_panel = ParsedPlanetPanel(
                         title=retry_title,
                         planet_id=int(retry_match.group(1)) if retry_match else None,
                         mining_cost=parsed_panel.mining_cost,
                         speed_cost=parsed_panel.speed_cost,
                         cargo_cost=parsed_panel.cargo_cost,
                     )
+                    scan_legacy_title_trust = self._scan_seed_title_trust_details(retry_panel)
+                    parsed_panel = retry_panel
                     title_backend = retry_backend or title_backend
-                    title_is_trustworthy = self._scan_seed_title_is_trustworthy(parsed_panel)
+                    title_is_trustworthy = bool(scan_legacy_title_trust.get("trustworthy"))
                     scan_title_trustworthy = title_is_trustworthy
             if not (seed_is_enough and title_is_trustworthy and clearly_unaffordable):
                 scan_used_full_panel_parse = True
@@ -519,6 +543,20 @@ class PlanetPanelReader:
                 used_legacy_title_retry=scan_used_legacy_title_retry,
                 suspicious_cost_retry_fields=tuple(scan_retry_cost_fields),
                 escalation_reasons=tuple(escalation_reasons),
+                title_trust={
+                    "direct": {
+                        "raw_title": scan_direct_title_raw,
+                        **scan_direct_title_trust,
+                    },
+                    "legacy_retry": (
+                        {
+                            "raw_title": scan_legacy_retry_title_raw,
+                            **scan_legacy_title_trust,
+                        }
+                        if scan_legacy_title_trust is not None
+                        else None
+                    ),
+                },
                 panel_class=self._scan_panel_class(
                     used_full_panel_parse=scan_used_full_panel_parse,
                     full_panel_parse_reason=scan_full_panel_parse_reason,
@@ -532,7 +570,7 @@ class PlanetPanelReader:
         return self._read_state()
 
     def read_for_probe(self) -> PlanetPanelState:
-        parsed_panel, title_backend = self._read_scan_seed()
+        parsed_panel, title_backend, _raw_title = self._read_scan_seed()
         if self._panel_has_enough_data(parsed_panel) and self._scan_seed_title_is_trustworthy(parsed_panel):
             state = self._state_from_seed(parsed_panel, title_backend)
             self._observe(

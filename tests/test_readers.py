@@ -520,6 +520,24 @@ def test_planet_panel_reader_scan_mode_emits_observability_event_for_suspicious_
     assert payload["suspicious_cost_retry_fields"] == ("mining_cost", "speed_cost", "cargo_cost")
     assert payload["escalation_reasons"] == ("suspicious_cost_retry", "legacy_title_retry")
     assert payload["panel_class"] == "suspicious_cost_retry+legacy_title_retry"
+    assert payload["title_trust"]["direct"] == {
+        "raw_title": "5. NEWTON",
+        "sanitized_title": "5. NEWTON",
+        "normalized_title": "Newton",
+        "planet_id": 5,
+        "expected_planet_id": 6,
+        "trustworthy": False,
+        "trust_reason": "planet_id_mismatch",
+    }
+    assert payload["title_trust"]["legacy_retry"] == {
+        "raw_title": "6. NEWTON",
+        "sanitized_title": "6. NEWTON",
+        "normalized_title": "Newton",
+        "planet_id": 6,
+        "expected_planet_id": 6,
+        "trustworthy": True,
+        "trust_reason": "",
+    }
 
 
 def test_planet_panel_reader_scan_mode_accepts_colony_level_title_without_panel_parse():
@@ -683,6 +701,96 @@ def test_planet_panel_reader_scan_mode_emits_full_parse_classification_for_incom
     assert payload["full_panel_parse_reason"] == "incomplete_seed"
     assert payload["escalation_reasons"] == ("full_panel_parse:incomplete_seed",)
     assert payload["panel_class"] == "full_panel_parse:incomplete_seed"
+    assert payload["title_trust"]["direct"] == {
+        "raw_title": "",
+        "sanitized_title": "",
+        "normalized_title": "",
+        "planet_id": None,
+        "expected_planet_id": None,
+        "trustworthy": False,
+        "trust_reason": "unrecognized_title",
+    }
+    assert payload["title_trust"]["legacy_retry"] is None
+
+
+def test_planet_panel_reader_scan_mode_emits_title_trust_evidence_for_untrusted_legacy_retry():
+    cfg = RuntimeConfig()
+    rects = RectStore(
+        path=None,
+        rects={
+            "PLANET_PANEL_TEXT": (0, 0, 1, 1),
+            "PLANET_TITLE": (0, 0, 1, 1),
+            "UPGRADE_MINING": (0, 0, 1, 1),
+            "UPGRADE_SPEED": (0, 0, 1, 1),
+            "UPGRADE_CARGO": (0, 0, 1, 1),
+        },
+    )
+    events = []
+    perception = HybridPerceptionBackend(
+        primary=FakeBackend(
+            name="windows",
+            mapping={
+                (cfg.perception.prompt_planet_title, "planet_title"): "1. SOLVEIG",
+                (cfg.perception.prompt_numeric, "numeric"): "3370",
+                (cfg.perception.prompt_planet_panel, "planet_panel"): "\n".join(
+                    [
+                        "$ 435",
+                        "10. SOLVEIG",
+                        "Mining Rate",
+                        "1.11 / sec",
+                        "Ship Speed",
+                        "1.45 mkph",
+                        "Cargo",
+                        "7",
+                        "$3370",
+                        "$3370",
+                        "$3370",
+                    ]
+                ),
+            },
+        ),
+        fallback=FakeBackend(
+            name="legacy",
+            mapping={
+                (cfg.perception.prompt_planet_title, "planet_title"): "2. SOLVEIG",
+            },
+        ),
+    )
+    reader = PlanetPanelReader(
+        cfg,
+        rects,
+        FakeCapture(),
+        perception,
+        observer=lambda event, **payload: events.append((event, payload)),
+    )
+    state = reader.read_for_scan(cash=435)
+    assert state.title == "10. SOLVEIG"
+    assert state.planet_id == 10
+    assert len(events) == 1
+    event_name, payload = events[0]
+    assert event_name == "planet_panel_scan_read"
+    assert payload["used_legacy_title_retry"] is True
+    assert payload["used_full_panel_parse"] is True
+    assert payload["full_panel_parse_reason"] == "untrusted_title"
+    assert payload["panel_class"] == "legacy_title_retry+full_panel_parse:untrusted_title"
+    assert payload["title_trust"]["direct"] == {
+        "raw_title": "1. SOLVEIG",
+        "sanitized_title": "1. SOLVEIG",
+        "normalized_title": "Solveig",
+        "planet_id": 1,
+        "expected_planet_id": 10,
+        "trustworthy": False,
+        "trust_reason": "planet_id_mismatch",
+    }
+    assert payload["title_trust"]["legacy_retry"] == {
+        "raw_title": "2. SOLVEIG",
+        "sanitized_title": "2. SOLVEIG",
+        "normalized_title": "Solveig",
+        "planet_id": 2,
+        "expected_planet_id": 10,
+        "trustworthy": False,
+        "trust_reason": "planet_id_mismatch",
+    }
 
 
 def test_planet_panel_reader_scan_mode_falls_back_when_direct_title_id_is_inconsistent():

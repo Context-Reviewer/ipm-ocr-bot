@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 
 from ..decisions import choose_planet_upgrade
 from ..domain_data import normalize_planet_name
@@ -29,6 +29,150 @@ class PlanetsTask:
     capture: object | None = None
     config: object | None = None
     name: str = "planets"
+    _run_observability: dict[str, object] | None = field(default=None, init=False, repr=False)
+
+    @staticmethod
+    def _new_run_observability(*, probe_enabled: bool) -> dict[str, object]:
+        return {
+            "classification": {
+                "run_kind": "unknown",
+                "decision_present": False,
+                "steps_count": 0,
+                "action_outcome": "none",
+            },
+            "probe": {
+                "enabled": probe_enabled,
+                "ok": None,
+                "reason": None,
+                "light_reads": 0,
+                "full_fallback_reads": 0,
+            },
+            "scan": {
+                "visible_planet_count": 0,
+                "complete_loop": False,
+                "panel_reads": 0,
+                "direct_title_reads": 0,
+                "fast_seed_reads": 0,
+                "legacy_title_retries": 0,
+                "suspicious_cost_retry_reads": 0,
+                "suspicious_cost_retry_fields": 0,
+                "full_panel_parses": 0,
+                "full_parse_reasons": {},
+                "escalation_reason_counts": {},
+                "panel_class_counts": {},
+                "slow_panel_threshold_seconds": 1.0,
+                "slow_panel_count": 0,
+                "slow_panel_class_counts": {},
+                "slow_panels": [],
+            },
+            "confirmation": {
+                "reads_used": 0,
+                "verified_on_read": None,
+                "current_planet_snapshot_reads": 0,
+                "full_planet_snapshot_reads": 0,
+                "cash_snapshot_reads": 0,
+            },
+        }
+
+    @staticmethod
+    def _increment_bucket_count(bucket: dict[str, object], key: str, amount: int = 1) -> None:
+        bucket[key] = int(bucket.get(key, 0)) + int(amount)
+
+    def _observe_reader_event(self, event: str, **payload) -> None:
+        if self._run_observability is None:
+            return
+        if event == "planet_panel_probe_read":
+            probe = self._run_observability["probe"]
+            if payload.get("used_fast_path"):
+                self._increment_bucket_count(probe, "light_reads")
+            if payload.get("used_full_panel_fallback"):
+                self._increment_bucket_count(probe, "full_fallback_reads")
+            return
+        if event != "planet_panel_scan_read":
+            return
+        scan = self._run_observability["scan"]
+        self._increment_bucket_count(scan, "panel_reads")
+        if payload.get("used_direct_title_read"):
+            self._increment_bucket_count(scan, "direct_title_reads")
+        if payload.get("seed_enough") and payload.get("title_trustworthy") and not payload.get("used_full_panel_parse"):
+            self._increment_bucket_count(scan, "fast_seed_reads")
+        if payload.get("used_legacy_title_retry"):
+            self._increment_bucket_count(scan, "legacy_title_retries")
+        retry_fields = tuple(payload.get("suspicious_cost_retry_fields", ()))
+        if retry_fields:
+            self._increment_bucket_count(scan, "suspicious_cost_retry_reads")
+            self._increment_bucket_count(scan, "suspicious_cost_retry_fields", len(retry_fields))
+        if payload.get("used_full_panel_parse"):
+            self._increment_bucket_count(scan, "full_panel_parses")
+            reasons = scan["full_parse_reasons"]
+            reason = str(payload.get("full_panel_parse_reason") or "unknown")
+            reasons[reason] = int(reasons.get(reason, 0)) + 1
+        escalation_reasons = scan["escalation_reason_counts"]
+        for reason in tuple(payload.get("escalation_reasons", ())):
+            reason_text = str(reason or "unknown")
+            escalation_reasons[reason_text] = int(escalation_reasons.get(reason_text, 0)) + 1
+        panel_class = str(payload.get("panel_class") or "unknown")
+        panel_classes = scan["panel_class_counts"]
+        panel_classes[panel_class] = int(panel_classes.get(panel_class, 0)) + 1
+        elapsed_seconds = float(payload.get("elapsed_seconds") or 0.0)
+        slow_threshold = float(scan.get("slow_panel_threshold_seconds") or 1.0)
+        if elapsed_seconds >= slow_threshold:
+            scan["slow_panels"].append(
+                {
+                    "title": payload.get("title"),
+                    "planet_id": payload.get("planet_id"),
+                    "elapsed_seconds": elapsed_seconds,
+                    "used_full_panel_parse": bool(payload.get("used_full_panel_parse")),
+                    "full_panel_parse_reason": payload.get("full_panel_parse_reason") or "",
+                    "suspicious_cost_retry_fields": list(retry_fields),
+                    "escalation_reasons": list(payload.get("escalation_reasons", ())),
+                    "panel_class": panel_class,
+                }
+            )
+
+    def _finalize_observability(self, details: dict[str, object]) -> dict[str, object]:
+        if self._run_observability is None:
+            return {}
+        observability = self._run_observability
+        classification = observability["classification"]
+        steps = details.get("steps") or []
+        decision_present = bool(details.get("decision") is not None or steps)
+        classification["decision_present"] = decision_present
+        classification["steps_count"] = len(steps)
+        if decision_present:
+            classification["run_kind"] = "action_bearing"
+            if details.get("verified"):
+                classification["action_outcome"] = "verified"
+            elif details.get("executed"):
+                classification["action_outcome"] = "verification_failed"
+            else:
+                last_step = steps[-1] if steps else {}
+                classification["action_outcome"] = str(last_step.get("block_reason") or "blocked_pre_action")
+        else:
+            error = str(details.get("error") or "")
+            if error.startswith("starfield_probe_"):
+                classification["run_kind"] = "probe_failed"
+            elif error == "planet_panel_unreadable":
+                classification["run_kind"] = "panel_unreadable"
+            else:
+                classification["run_kind"] = "no_op"
+        observability["scan"]["slow_panels"] = sorted(
+            observability["scan"]["slow_panels"],
+            key=lambda item: float(item.get("elapsed_seconds") or 0.0),
+            reverse=True,
+        )
+        slow_panel_classes: dict[str, int] = {}
+        for item in observability["scan"]["slow_panels"]:
+            panel_class = str(item.get("panel_class") or "unknown")
+            slow_panel_classes[panel_class] = slow_panel_classes.get(panel_class, 0) + 1
+        observability["scan"]["slow_panel_count"] = len(observability["scan"]["slow_panels"])
+        observability["scan"]["slow_panel_class_counts"] = slow_panel_classes
+        return observability
+
+    def _task_result(self, *, ok: bool, details: dict[str, object]) -> TaskResult:
+        details = dict(details)
+        details["observability"] = self._finalize_observability(details)
+        return TaskResult(ok=ok, details=details)
 
     @staticmethod
     def _verified(before_panel, after_snapshot, target_planet_id: int, stat: str) -> bool:
@@ -172,18 +316,24 @@ class PlanetsTask:
         return int(live_cost) >= int(scanned_cost)
 
     def _read_planet_snapshot(self):
+        if self._run_observability is not None:
+            self._increment_bucket_count(self._run_observability["confirmation"], "full_planet_snapshot_reads")
         read_planet_snapshot = getattr(self.state_reader, "read_planet_snapshot", None)
         if callable(read_planet_snapshot):
             return read_planet_snapshot()
         return self.state_reader.read()
 
     def _read_cash_snapshot(self):
+        if self._run_observability is not None:
+            self._increment_bucket_count(self._run_observability["confirmation"], "cash_snapshot_reads")
         read_cash_snapshot = getattr(self.state_reader, "read_cash_snapshot", None)
         if callable(read_cash_snapshot):
             return read_cash_snapshot()
         return None
 
     def _read_current_planet_snapshot(self):
+        if self._run_observability is not None:
+            self._increment_bucket_count(self._run_observability["confirmation"], "current_planet_snapshot_reads")
         read_current_planet_snapshot = getattr(self.state_reader, "read_current_planet_snapshot", None)
         if callable(read_current_planet_snapshot):
             return read_current_planet_snapshot()
@@ -203,7 +353,11 @@ class PlanetsTask:
             snapshots.append(snapshot)
             if self._verified(before_panel, snapshot, target_planet_id, stat):
                 verified_candidate = snapshot
+                if self._run_observability is not None:
+                    self._run_observability["confirmation"]["verified_on_read"] = len(snapshots)
                 break
+        if self._run_observability is not None:
+            self._run_observability["confirmation"]["reads_used"] = len(snapshots)
         if verified_candidate is not None and verified_candidate.cash is None:
             cash_snapshot = self._read_cash_snapshot()
             if cash_snapshot is None or cash_snapshot.cash is None:
@@ -214,16 +368,25 @@ class PlanetsTask:
 
     def run(self) -> TaskResult:
         if self.reader is None or self.state_reader is None or self.actions is None or self.config is None:
-            return TaskResult(
-                ok=True,
-                details={
-                    "implemented": False,
-                    "message": "Planet task dependencies not configured.",
-                },
-            )
+            self._run_observability = self._new_run_observability(probe_enabled=False)
+            try:
+                return self._task_result(
+                    ok=True,
+                    details={
+                        "implemented": False,
+                        "message": "Planet task dependencies not configured.",
+                    },
+                )
+            finally:
+                self._run_observability = None
+        observer_supported = hasattr(self.reader, "observer")
         self.actions.reset_ui()
         initial_panel = None
         probe_enabled = bool(getattr(getattr(self.config, "starfield", None), "enable_click_probe", False))
+        self._run_observability = self._new_run_observability(probe_enabled=probe_enabled)
+        previous_observer = getattr(self.reader, "observer", None) if observer_supported else None
+        if observer_supported:
+            self.reader.observer = self._observe_reader_event
         if probe_enabled:
             probe = try_open_nearest_starfield_candidate(
                 capture=self.capture,
@@ -288,24 +451,31 @@ class PlanetsTask:
                 max_ship_bbox_height=int(getattr(self.config.starfield, "max_ship_bbox_height", 90)),
                 max_ship_area_ratio=float(getattr(self.config.starfield, "max_ship_area_ratio", 0.08)),
             )
+            self._run_observability["probe"]["ok"] = bool(probe.ok)
+            self._run_observability["probe"]["reason"] = probe.reason
             if not probe.ok:
                 self.actions.reset_ui()
-                return TaskResult(
-                    ok=False,
-                    details={
-                        "implemented": True,
-                        "planet_order": [],
-                        "scanned_planets": {},
-                        "planet_panel": asdict(probe.panel) if probe.panel is not None else None,
-                        "cash": None,
-                        "decision": None,
-                        "executed": False,
-                        "verified": False,
-                        "steps": [],
-                        "after_planet_panel": None,
-                        "error": f"starfield_probe_{probe.reason}",
-                    },
-                )
+                try:
+                    return self._task_result(
+                        ok=False,
+                        details={
+                            "implemented": True,
+                            "planet_order": [],
+                            "scanned_planets": {},
+                            "planet_panel": asdict(probe.panel) if probe.panel is not None else None,
+                            "cash": None,
+                            "decision": None,
+                            "executed": False,
+                            "verified": False,
+                            "steps": [],
+                            "after_planet_panel": None,
+                            "error": f"starfield_probe_{probe.reason}",
+                        },
+                    )
+                finally:
+                    if observer_supported:
+                        self.reader.observer = previous_observer
+                    self._run_observability = None
             initial_panel = probe.panel
         else:
             open_attempts = max(1, int(getattr(self.config.policy, "planet_panel_open_attempts", 1)))
@@ -316,28 +486,35 @@ class PlanetsTask:
                     break
         if not self._panel_readable(initial_panel):
             self.actions.reset_ui()
-            return TaskResult(
-                ok=False,
-                details={
-                    "implemented": True,
-                    "planet_order": [],
-                    "scanned_planets": {},
-                    "planet_panel": asdict(initial_panel) if initial_panel is not None else None,
-                    "cash": None,
-                    "decision": None,
-                    "executed": False,
-                    "verified": False,
-                    "steps": [],
-                    "after_planet_panel": None,
-                    "error": "planet_panel_unreadable",
-                },
-            )
+            try:
+                return self._task_result(
+                    ok=False,
+                    details={
+                        "implemented": True,
+                        "planet_order": [],
+                        "scanned_planets": {},
+                        "planet_panel": asdict(initial_panel) if initial_panel is not None else None,
+                        "cash": None,
+                        "decision": None,
+                        "executed": False,
+                        "verified": False,
+                        "steps": [],
+                        "after_planet_panel": None,
+                        "error": "planet_panel_unreadable",
+                    },
+                )
+            finally:
+                if observer_supported:
+                    self.reader.observer = previous_observer
+                self._run_observability = None
         cash_snapshot = self._read_cash_snapshot()
         navigator = PlanetNavigator(
             _PlanetScanReader(self.reader, cash=getattr(cash_snapshot, "cash", None)),
             self.actions,
         )
         scan = navigator.scan_visible_planets(initial_panel=initial_panel)
+        self._run_observability["scan"]["visible_planet_count"] = len(scan.order)
+        self._run_observability["scan"]["complete_loop"] = bool(getattr(scan, "complete_loop", False))
         snapshot = cash_snapshot if cash_snapshot is not None else self._read_planet_snapshot()
         if getattr(cash_snapshot, "cash", None) is not None:
             snapshot.cash = cash_snapshot.cash
@@ -399,6 +576,21 @@ class PlanetsTask:
                 {
                     "decision": asdict(decision),
                     "navigated": navigated,
+                    "affordable": affordable,
+                    "live_cost_guard_blocked": bool(navigated and not live_cost_plausible),
+                    "block_reason": (
+                        None
+                        if verified
+                        else "navigation_failed"
+                        if not navigated
+                        else "live_cost_guard_blocked"
+                        if not live_cost_plausible
+                        else "unaffordable"
+                        if not affordable
+                        else "verification_failed"
+                        if executed
+                        else "action_rejected"
+                    ),
                     "executed": executed,
                     "verified": verified,
                     "before_planet": asdict(target_before) if target_before is not None else None,
@@ -414,18 +606,23 @@ class PlanetsTask:
             snapshot.current_planet = after_snapshot.current_planet
             snapshot.scanned_planets[decision.planet_id] = after_snapshot.current_planet
         self.actions.reset_ui()
-        return TaskResult(
-            ok=not failure,
-            details={
-                "implemented": True,
-                "planet_order": list(snapshot.planet_order),
-                "scanned_planets": {pid: asdict(panel) for pid, panel in snapshot.scanned_planets.items()},
-                "planet_panel": asdict(snapshot.current_planet),
-                "cash": snapshot.cash,
-                "decision": asdict(decision) if decision is not None else None,
-                "executed": executed,
-                "verified": verified,
-                "steps": steps,
-                "after_planet_panel": asdict(after_snapshot.current_planet) if after_snapshot is not None else None,
-            },
-        )
+        try:
+            return self._task_result(
+                ok=not failure,
+                details={
+                    "implemented": True,
+                    "planet_order": list(snapshot.planet_order),
+                    "scanned_planets": {pid: asdict(panel) for pid, panel in snapshot.scanned_planets.items()},
+                    "planet_panel": asdict(snapshot.current_planet),
+                    "cash": snapshot.cash,
+                    "decision": asdict(decision) if decision is not None else None,
+                    "executed": executed,
+                    "verified": verified,
+                    "steps": steps,
+                    "after_planet_panel": asdict(after_snapshot.current_planet) if after_snapshot is not None else None,
+                },
+            )
+        finally:
+            if observer_supported:
+                self.reader.observer = previous_observer
+            self._run_observability = None

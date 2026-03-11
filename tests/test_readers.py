@@ -478,6 +478,50 @@ def test_planet_panel_reader_scan_mode_retries_untrusted_affordable_cost_before_
     assert state.cargo_cost == 9440
 
 
+def test_planet_panel_reader_scan_mode_emits_observability_event_for_suspicious_cost_retry():
+    cfg = RuntimeConfig()
+    rects = RectStore(
+        path=None,
+        rects={
+            "PLANET_PANEL_TEXT": (0, 0, 1, 1),
+            "PLANET_TITLE": (0, 0, 1, 1),
+            "UPGRADE_MINING": (0, 0, 1, 1),
+            "UPGRADE_SPEED": (0, 0, 1, 1),
+            "UPGRADE_CARGO": (0, 0, 1, 1),
+        },
+    )
+    events = []
+    perception = HybridPerceptionBackend(
+        primary=FakeBackend(
+            name="windows",
+            mapping={
+                (cfg.perception.prompt_planet_title, "planet_title"): "5. NEWTON",
+                (cfg.perception.prompt_numeric, "numeric"): "9",
+            },
+            fail_panel_text=True,
+        ),
+        fallback=FakeBackend(
+            name="legacy",
+            mapping={
+                (cfg.perception.prompt_planet_title, "planet_title"): "6. NEWTON",
+                (cfg.perception.prompt_numeric, "numeric"): "9440",
+            },
+        ),
+    )
+    reader = PlanetPanelReader(cfg, rects, FakeCapture(), perception, observer=lambda event, **payload: events.append((event, payload)))
+    state = reader.read_for_scan(cash=187)
+    assert state.planet_id == 6
+    assert len(events) == 1
+    event_name, payload = events[0]
+    assert event_name == "planet_panel_scan_read"
+    assert payload["used_direct_title_read"] is True
+    assert payload["used_full_panel_parse"] is False
+    assert payload["used_legacy_title_retry"] is True
+    assert payload["suspicious_cost_retry_fields"] == ("mining_cost", "speed_cost", "cargo_cost")
+    assert payload["escalation_reasons"] == ("suspicious_cost_retry", "legacy_title_retry")
+    assert payload["panel_class"] == "suspicious_cost_retry+legacy_title_retry"
+
+
 def test_planet_panel_reader_scan_mode_accepts_colony_level_title_without_panel_parse():
     cfg = RuntimeConfig()
     rects = RectStore(
@@ -583,6 +627,62 @@ def test_planet_panel_reader_scan_mode_falls_back_to_panel_parse_when_direct_see
     assert state.speed_cost == 210
     assert state.cargo_cost == 210
     assert ("planet_panel" in [mode for _prompt, mode in perception.calls])
+
+
+def test_planet_panel_reader_scan_mode_emits_full_parse_classification_for_incomplete_seed():
+    cfg = RuntimeConfig()
+    rects = RectStore(
+        path=None,
+        rects={
+            "PLANET_PANEL_TEXT": (0, 0, 1, 1),
+            "PLANET_TITLE": (0, 0, 1, 1),
+            "UPGRADE_MINING": (0, 0, 1, 1),
+            "UPGRADE_SPEED": (0, 0, 1, 1),
+            "UPGRADE_CARGO": (0, 0, 1, 1),
+        },
+    )
+    events = []
+    perception = TrackingNumericBackend(
+        name="windows",
+        mapping={
+            (cfg.perception.prompt_planet_title, "planet_title"): "",
+            (cfg.perception.prompt_numeric, "numeric"): "",
+            (
+                cfg.perception.prompt_planet_panel,
+                "planet_panel",
+            ): "\n".join(
+                [
+                    "$ 174",
+                    "2. BALOR",
+                    "Mining Rate",
+                    "1.11 / sec",
+                    "Ship Speed",
+                    "1.45 mkph",
+                    "Cargo",
+                    "7",
+                    "$461",
+                    "$210",
+                    "$210",
+                ]
+            ),
+        },
+    )
+    reader = PlanetPanelReader(
+        cfg,
+        rects,
+        FakeCapture(),
+        perception,
+        observer=lambda event, **payload: events.append((event, payload)),
+    )
+    state = reader.read_for_scan(cash=100)
+    assert state.planet_id == 2
+    assert len(events) == 1
+    event_name, payload = events[0]
+    assert event_name == "planet_panel_scan_read"
+    assert payload["used_full_panel_parse"] is True
+    assert payload["full_panel_parse_reason"] == "incomplete_seed"
+    assert payload["escalation_reasons"] == ("full_panel_parse:incomplete_seed",)
+    assert payload["panel_class"] == "full_panel_parse:incomplete_seed"
 
 
 def test_planet_panel_reader_scan_mode_falls_back_when_direct_title_id_is_inconsistent():

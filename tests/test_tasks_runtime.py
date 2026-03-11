@@ -102,6 +102,35 @@ class FakePlanetReader:
         return value
 
 
+class ObservablePlanetReader(FakePlanetReader):
+    def __init__(self, panels, scan_payloads):
+        super().__init__(panels)
+        self.scan_payloads = list(scan_payloads)
+        self.scan_index = 0
+        self.observer = None
+
+    def read_for_scan(self, *, cash=None):
+        value = self.read()
+        payload = dict(self.scan_payloads[min(self.scan_index, len(self.scan_payloads) - 1)])
+        self.scan_index += 1
+        payload.setdefault("title", value.title)
+        payload.setdefault("planet_id", value.planet_id)
+        payload.setdefault("title_backend", getattr(value, "title_backend", ""))
+        payload.setdefault("used_direct_title_read", True)
+        payload.setdefault("elapsed_seconds", 0.0)
+        payload.setdefault("seed_enough", True)
+        payload.setdefault("title_trustworthy", True)
+        payload.setdefault("used_full_panel_parse", False)
+        payload.setdefault("full_panel_parse_reason", "")
+        payload.setdefault("used_legacy_title_retry", False)
+        payload.setdefault("suspicious_cost_retry_fields", ())
+        payload.setdefault("escalation_reasons", ())
+        payload.setdefault("panel_class", "seed_only")
+        if callable(self.observer):
+            self.observer("planet_panel_scan_read", **payload)
+        return value
+
+
 def _runtime_config_without_starfield_probe(*, policy=None):
     runtime_config = RuntimeConfig(policy=policy or PolicyConfig())
     runtime_config.starfield.enable_click_probe = False
@@ -149,6 +178,10 @@ def test_planets_task_executes_upgrade_decision(monkeypatch):
     assert ("increase_planet_stat", "S") in actions.calls
     assert ("go_to_planet", 1, (1,)) in actions.calls
     assert len(result.details["steps"]) == 1
+    assert result.details["observability"]["classification"]["run_kind"] == "action_bearing"
+    assert result.details["observability"]["classification"]["action_outcome"] == "verified"
+    assert result.details["observability"]["confirmation"]["reads_used"] == 1
+    assert result.details["observability"]["confirmation"]["verified_on_read"] == 1
 
 
 def test_planets_task_fails_fast_when_planet_panel_never_becomes_readable(monkeypatch):
@@ -165,6 +198,7 @@ def test_planets_task_fails_fast_when_planet_panel_never_becomes_readable(monkey
     result = task.run()
     assert result.ok is False
     assert result.details["error"] == "planet_panel_unreadable"
+    assert result.details["observability"]["classification"]["run_kind"] == "panel_unreadable"
 
 
 def test_planets_task_replans_for_multiple_verified_upgrades(monkeypatch):
@@ -670,9 +704,142 @@ def test_planets_task_blocks_tiny_live_cost_when_scan_shows_same_level_is_more_e
     assert result.ok is False
     assert result.details["decision"]["planet_id"] == 4
     assert result.details["steps"][0]["navigated"] is True
+    assert result.details["steps"][0]["live_cost_guard_blocked"] is True
+    assert result.details["steps"][0]["block_reason"] == "live_cost_guard_blocked"
     assert result.details["executed"] is False
     assert result.details["verified"] is False
+    assert result.details["observability"]["classification"]["action_outcome"] == "live_cost_guard_blocked"
     assert ("increase_planet_stat", "C") not in actions.calls
+
+
+def test_planets_task_classifies_no_op_runs(monkeypatch):
+    before = GameSnapshot(
+        cash=100,
+        current_planet=PlanetPanelState(
+            planet_id=1,
+            title="1. BALOR",
+            mining_level=8,
+            speed_level=6,
+            cargo_level=7,
+            mining_cost=400,
+            speed_cost=200,
+            cargo_cost=250,
+        ),
+    )
+    monkeypatch.setattr("ipm.tasks.planets.PlanetNavigator", FakeNavigator)
+    actions = FakeActions()
+    reader = FakePlanetReader([before.current_planet, before.current_planet])
+    task = PlanetsTask(
+        reader=reader,
+        state_reader=FakeStateReader([before]),
+        actions=actions,
+        config=_runtime_config_without_starfield_probe(policy=PolicyConfig(max_planet_upgrades_per_task=1)),
+    )
+    result = task.run()
+    assert result.ok is True
+    assert result.details["decision"] is None
+    assert result.details["observability"]["classification"]["run_kind"] == "no_op"
+    assert result.details["observability"]["classification"]["action_outcome"] == "none"
+    assert result.details["observability"]["scan"]["visible_planet_count"] == 1
+
+
+def test_planets_task_aggregates_scan_observability_classes_and_slow_panels(monkeypatch):
+    before = GameSnapshot(
+        cash=100,
+        current_planet=PlanetPanelState(
+            planet_id=6,
+            title="6. NEWTON",
+            mining_level=8,
+            speed_level=6,
+            cargo_level=7,
+            mining_cost=400,
+            speed_cost=200,
+            cargo_cost=250,
+        ),
+    )
+    monkeypatch.setattr("ipm.tasks.planets.PlanetNavigator", FakeNavigator)
+    actions = FakeActions()
+    reader = ObservablePlanetReader(
+        [before.current_planet, before.current_planet],
+        [
+            {
+                "elapsed_seconds": 1.234,
+                "seed_enough": True,
+                "title_trustworthy": True,
+                "used_full_panel_parse": False,
+                "used_legacy_title_retry": True,
+                "suspicious_cost_retry_fields": ("mining_cost", "speed_cost", "cargo_cost"),
+                "escalation_reasons": ("suspicious_cost_retry", "legacy_title_retry"),
+                "panel_class": "suspicious_cost_retry+legacy_title_retry",
+            }
+        ],
+    )
+    task = PlanetsTask(
+        reader=reader,
+        state_reader=FakeStateReader([before]),
+        actions=actions,
+        config=_runtime_config_without_starfield_probe(policy=PolicyConfig(max_planet_upgrades_per_task=1)),
+    )
+    result = task.run()
+    assert result.ok is True
+    assert result.details["decision"] is None
+    scan = result.details["observability"]["scan"]
+    assert scan["direct_title_reads"] == 1
+    assert scan["legacy_title_retries"] == 1
+    assert scan["suspicious_cost_retry_reads"] == 1
+    assert scan["suspicious_cost_retry_fields"] == 3
+    assert scan["panel_class_counts"] == {"suspicious_cost_retry+legacy_title_retry": 1}
+    assert scan["escalation_reason_counts"] == {"suspicious_cost_retry": 1, "legacy_title_retry": 1}
+    assert scan["slow_panel_count"] == 1
+    assert scan["slow_panel_class_counts"] == {"suspicious_cost_retry+legacy_title_retry": 1}
+    assert scan["slow_panels"][0]["panel_class"] == "suspicious_cost_retry+legacy_title_retry"
+    assert scan["slow_panels"][0]["escalation_reasons"] == ["suspicious_cost_retry", "legacy_title_retry"]
+
+
+def test_planets_task_aggregates_full_parse_escalation_reason_counts(monkeypatch):
+    before = GameSnapshot(
+        cash=100,
+        current_planet=PlanetPanelState(
+            planet_id=2,
+            title="2. BALOR",
+            mining_level=8,
+            speed_level=6,
+            cargo_level=7,
+            mining_cost=461,
+            speed_cost=210,
+            cargo_cost=210,
+        ),
+    )
+    monkeypatch.setattr("ipm.tasks.planets.PlanetNavigator", FakeNavigator)
+    actions = FakeActions()
+    reader = ObservablePlanetReader(
+        [before.current_planet, before.current_planet],
+        [
+            {
+                "elapsed_seconds": 1.111,
+                "seed_enough": False,
+                "title_trustworthy": False,
+                "used_full_panel_parse": True,
+                "full_panel_parse_reason": "incomplete_seed",
+                "escalation_reasons": ("full_panel_parse:incomplete_seed",),
+                "panel_class": "full_panel_parse:incomplete_seed",
+            }
+        ],
+    )
+    task = PlanetsTask(
+        reader=reader,
+        state_reader=FakeStateReader([before]),
+        actions=actions,
+        config=_runtime_config_without_starfield_probe(policy=PolicyConfig(max_planet_upgrades_per_task=1)),
+    )
+    result = task.run()
+    assert result.ok is True
+    scan = result.details["observability"]["scan"]
+    assert scan["full_panel_parses"] == 1
+    assert scan["full_parse_reasons"] == {"incomplete_seed": 1}
+    assert scan["panel_class_counts"] == {"full_panel_parse:incomplete_seed": 1}
+    assert scan["escalation_reason_counts"] == {"full_panel_parse:incomplete_seed": 1}
+    assert scan["slow_panel_class_counts"] == {"full_panel_parse:incomplete_seed": 1}
 
 
 def test_planets_task_prefers_planet_only_snapshot_reader(monkeypatch):

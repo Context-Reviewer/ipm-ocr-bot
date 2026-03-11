@@ -154,6 +154,8 @@ def try_open_starfield_candidate_by_rank(
     max_ship_bbox_height: int = 90,
     max_ship_area_ratio: float = 0.08,
 ) -> StarfieldProbeResult:
+    probe_read = getattr(reader, "read_for_probe", None)
+
     def _attempt_confirmation(point: tuple[int, int], *, attempt_label: str) -> tuple[bool, str, object | None]:
         print(
             "[PLANET_NAV] "
@@ -162,12 +164,19 @@ def try_open_starfield_candidate_by_rank(
         )
         if not callable(click_point) or not click_point(point, delay=settle_seconds):
             return False, "click_failed", None
-        panel = reader.read()
-        if not panel_is_readable(panel):
-            return False, "panel_not_visible", panel
-        if callable(panel_is_confirmed) and not panel_is_confirmed(panel):
-            return False, "panel_not_confirmed", panel
-        return True, "open_confirmed", panel
+        first_panel = probe_read() if callable(probe_read) else reader.read()
+        if panel_is_readable(first_panel) and (not callable(panel_is_confirmed) or panel_is_confirmed(first_panel)):
+            return True, "open_confirmed", first_panel
+        if callable(probe_read):
+            panel = reader.read()
+            if not panel_is_readable(panel):
+                return False, "panel_not_visible", panel
+            if callable(panel_is_confirmed) and not panel_is_confirmed(panel):
+                return False, "panel_not_confirmed", panel
+            return True, "open_confirmed", panel
+        if not panel_is_readable(first_panel):
+            return False, "panel_not_visible", first_panel
+        return False, "panel_not_confirmed", first_panel
 
     if callable(starfield_ready_check):
         precheck = starfield_ready_check()

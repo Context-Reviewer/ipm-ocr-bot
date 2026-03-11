@@ -441,6 +441,67 @@ def test_planet_panel_reader_scan_mode_uses_legacy_title_retry_before_panel_pars
     assert state.cargo_cost == 999999
 
 
+def test_planet_panel_reader_scan_mode_accepts_colony_level_title_without_panel_parse():
+    cfg = RuntimeConfig()
+    rects = RectStore(
+        path=None,
+        rects={
+            "PLANET_PANEL_TEXT": (0, 0, 1, 1),
+            "PLANET_TITLE": (0, 0, 1, 1),
+            "UPGRADE_MINING": (0, 0, 1, 1),
+            "UPGRADE_SPEED": (0, 0, 1, 1),
+            "UPGRADE_CARGO": (0, 0, 1, 1),
+        },
+    )
+    perception = TrackingNumericBackend(
+        name="windows",
+        mapping={
+            (cfg.perception.prompt_planet_title, "planet_title"): "1. BALOR Colony Lv 1",
+            (cfg.perception.prompt_numeric, "numeric"): "999999",
+            (cfg.perception.prompt_planet_panel, "planet_panel"): "should not be used",
+        },
+    )
+    state = PlanetPanelReader(cfg, rects, FakeCapture(), perception).read_for_scan(cash=100)
+    assert state.planet_id == 1
+    assert state.title == "1. BALOR Colony Lv 1"
+    assert state.mining_cost == 999999
+    assert state.speed_cost == 999999
+    assert state.cargo_cost == 999999
+    assert ("planet_panel" not in [mode for _prompt, mode in perception.calls])
+
+
+def test_planet_panel_reader_probe_mode_prefers_direct_title_and_cost_reads():
+    cfg = RuntimeConfig()
+    rects = RectStore(
+        path=None,
+        rects={
+            "PLANET_PANEL_TEXT": (0, 0, 1, 1),
+            "PLANET_TITLE": (0, 0, 1, 1),
+            "UPGRADE_MINING": (0, 0, 1, 1),
+            "UPGRADE_SPEED": (0, 0, 1, 1),
+            "UPGRADE_CARGO": (0, 0, 1, 1),
+        },
+    )
+    perception = TrackingNumericBackend(
+        name="windows",
+        mapping={
+            (cfg.perception.prompt_planet_title, "planet_title"): "8. ACHERON",
+            (cfg.perception.prompt_numeric, "numeric"): "999999",
+            (cfg.perception.prompt_planet_panel, "planet_panel"): "should not be used",
+        },
+    )
+    state = PlanetPanelReader(cfg, rects, FakeCapture(), perception).read_for_probe()
+    assert state.planet_id == 8
+    assert state.title == "8. ACHERON"
+    assert state.mining_cost == 999999
+    assert state.speed_cost == 999999
+    assert state.cargo_cost == 999999
+    assert state.mining_level is None
+    assert state.speed_level is None
+    assert state.cargo_level is None
+    assert ("planet_panel" not in [mode for _prompt, mode in perception.calls])
+
+
 def test_planet_panel_reader_scan_mode_falls_back_to_panel_parse_when_direct_seed_is_incomplete():
     cfg = RuntimeConfig()
     rects = RectStore(

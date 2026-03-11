@@ -63,6 +63,17 @@ class FakeReader:
         return value
 
 
+class ProbeAwareReader(FakeReader):
+    def __init__(self, probe_panel, full_panel):
+        super().__init__(full_panel)
+        self.probe_panel = probe_panel
+        self.probe_calls = 0
+
+    def read_for_probe(self):
+        self.probe_calls += 1
+        return self.probe_panel
+
+
 def _draw_ship(draw, *, cx, cy, size, fill=(245, 245, 245), glow=None):
     ship_w, ship_h = size
     body_w = max(10, int(round(ship_w * 0.46)))
@@ -403,6 +414,46 @@ def test_starfield_probe_small_candidate_uses_fallback_click_after_primary_confi
     ]
 
 
+def test_starfield_probe_uses_probe_read_fast_path_without_full_reread_on_confirmed_success():
+    actions = FakeActions()
+    reader = ProbeAwareReader(
+        PlanetPanelState(planet_id=1, title="1. BALOR", mining_cost=100, speed_cost=200),
+        PlanetPanelState(title="should not be used"),
+    )
+    result = try_open_nearest_starfield_candidate(
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((270, 120, 12),))),
+        actions=actions,
+        reader=reader,
+        panel_is_readable=_panel_is_readable,
+        panel_is_confirmed=lambda panel: bool(panel and panel.title == "1. BALOR"),
+        settle_seconds=0.0,
+    )
+    assert result.ok is True
+    assert result.reason == "open_confirmed"
+    assert reader.probe_calls == 1
+    assert reader.calls == 0
+
+
+def test_starfield_probe_falls_back_to_full_read_when_probe_read_is_not_confirmed():
+    actions = FakeActions()
+    reader = ProbeAwareReader(
+        PlanetPanelState(title="Ship Speed", mining_cost=100, speed_cost=200),
+        PlanetPanelState(planet_id=1, title="1. BALOR", mining_cost=100, speed_cost=200),
+    )
+    result = try_open_nearest_starfield_candidate(
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((270, 120, 12),))),
+        actions=actions,
+        reader=reader,
+        panel_is_readable=_panel_is_readable,
+        panel_is_confirmed=lambda panel: bool(panel and panel.title == "1. BALOR"),
+        settle_seconds=0.0,
+    )
+    assert result.ok is True
+    assert result.reason == "open_confirmed"
+    assert reader.probe_calls == 1
+    assert reader.calls == 1
+
+
 def test_starfield_probe_small_candidate_returns_panel_not_confirmed_after_fallback_exhausted():
     actions = FakeActions()
     reader = FakeReader(
@@ -738,7 +789,7 @@ def test_planets_task_debug_flag_disabled_keeps_existing_path():
             self.reader = reader
             self.actions = actions
 
-        def scan_visible_planets(self):
+        def scan_visible_planets(self, initial_panel=None):
             return type("Scan", (), {"planets": {1: PlanetPanelState(planet_id=1, title="1. BALOR")}, "order": [1]})()
 
         def go_to_planet(self, target_id, order, known_planets=None):

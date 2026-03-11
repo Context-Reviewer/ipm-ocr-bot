@@ -235,6 +235,23 @@ class PlanetPanelReader:
             title_backend = title_backend or legacy_result.backend
         return panel, title_backend
 
+    @staticmethod
+    def _state_from_seed(parsed_panel: ParsedPlanetPanel, title_backend: str) -> PlanetPanelState:
+        title_text = parsed_panel.title
+        match = re.search(r"^\s*(\d+)", title_text)
+        planet_id = parsed_panel.planet_id or (int(match.group(1)) if match else None)
+        return PlanetPanelState(
+            planet_id=planet_id,
+            title=title_text,
+            mining_level=parsed_panel.mining_level,
+            speed_level=parsed_panel.speed_level,
+            cargo_level=parsed_panel.cargo_level,
+            mining_cost=parsed_panel.mining_cost,
+            speed_cost=parsed_panel.speed_cost,
+            cargo_cost=parsed_panel.cargo_cost,
+            title_backend=title_backend,
+        )
+
     def _read_state(self, *, scan_cash: int | None = None) -> PlanetPanelState:
         if scan_cash is None:
             parsed_panel, title_backend = self._read_panel()
@@ -372,6 +389,12 @@ class PlanetPanelReader:
 
     def read(self) -> PlanetPanelState:
         return self._read_state()
+
+    def read_for_probe(self) -> PlanetPanelState:
+        parsed_panel, title_backend = self._read_scan_seed()
+        if self._panel_has_enough_data(parsed_panel) and self._scan_seed_title_is_trustworthy(parsed_panel):
+            return self._state_from_seed(parsed_panel, title_backend)
+        return self.read()
 
     def read_for_scan(self, *, cash: int | None = None) -> PlanetPanelState:
         return self._read_state(scan_cash=cash)

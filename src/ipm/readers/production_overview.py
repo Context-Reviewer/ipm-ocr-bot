@@ -10,7 +10,7 @@ from PIL import Image, ImageChops, ImageStat
 import bars_data
 import items_data
 from .. import perception as perception_backend
-from ..domain_data import normalize_resource_row_name
+from ..domain_data import RESOURCE_ROW_NAMES, normalize_resource_row_name
 from ..state import ProductionOverviewCardState
 from .common import parse_compact_number
 
@@ -18,19 +18,37 @@ _TIMER_TEXT_RE = re.compile(r"[0-9].*[SMH]|[0-9]+:[0-9]+", re.IGNORECASE)
 _TIMER_PROMPT = "Read only the visible timer text or OFF. Return only the timer text."
 _COUNT_PROMPT = "Read only the visible output quantity. Keep suffixes like K or M if present."
 _INPUT_COUNT_PROMPT = "Read only the visible left input quantity text like 404/1.00K. Return only that quantity text."
+_TOOLTIP_PROMPT = "Read only the visible tooltip/item name near the probed icon. Return only the name."
 _SMELT_RECIPE_PANEL_PROMPT = "Read visible text from the SMELT RECIPES popup. Return only the visible recipe names and times."
 _PRODUCTION_SCROLL_DELAY_SECONDS = 0.35
 _INPUT_SIGNAL_WEIGHT = 0.35
 _SMELT_OUTPUT_REGION_WEIGHT = 0.20
 _SMELT_INPUT_QTY_WEIGHT = 0.18
+_ACTIVE_FILL_HINT_MIN = 0.008
+_ACTIVE_FILL_CONFIDENT_MIN = 0.05
+_PRODUCTION_TOP_SCROLL_MAX_ATTEMPTS = 3
 _RECIPE_BUTTON_REL_X = 0.375
 _RECIPE_BUTTON_REL_Y = 0.807
-_SMELT_RECIPE_LAYOUT = (
-    ("Copper Bar", (49, 207, 96, 260), (105, 209, 165, 262)),
-    ("Iron Bar", (184, 207, 231, 260), (240, 209, 300, 262)),
-    ("Lead Bar", (49, 392, 96, 445), (105, 394, 165, 447)),
-    ("Silicon Bar", (184, 392, 231, 445), (240, 394, 300, 447)),
-    ("Aluminum Bar", (49, 577, 96, 630), (105, 579, 165, 632)),
+_TOOLTIP_PROBE_POINT_FRACTIONS = (
+    (0.30, 0.35),
+    (0.60, 0.35),
+    (0.30, 0.65),
+    (0.60, 0.65),
+)
+_SMELT_RECIPE_SCROLL_DELTA = -120
+_SMELT_RECIPE_SLOT_LAYOUT_PAGE0 = (
+    ((49, 207, 96, 260), (105, 209, 165, 262)),
+    ((184, 207, 231, 260), (240, 209, 300, 262)),
+    ((49, 392, 96, 445), (105, 394, 165, 447)),
+    ((184, 392, 231, 445), (240, 394, 300, 447)),
+    ((49, 577, 96, 630), (105, 579, 165, 632)),
+    ((184, 577, 231, 630), (240, 579, 300, 632)),
+)
+_SMELT_RECIPE_SLOT_LAYOUT_SCROLLED = (
+    ((49, 207, 96, 260), (105, 209, 165, 262)),
+    ((184, 207, 231, 260), (240, 209, 300, 262)),
+    ((49, 392, 96, 445), (105, 394, 165, 447)),
+    ((184, 392, 231, 445), (240, 394, 300, 447)),
 )
 
 
@@ -39,6 +57,12 @@ class _SmeltRecipePopupEntry:
     output_name: str
     ore_icon_box: tuple[int, int, int, int]
     output_icon_box: tuple[int, int, int, int]
+
+
+@dataclass(slots=True, frozen=True)
+class _TooltipIconRegion:
+    kind: str
+    box: tuple[int, int, int, int]
 
 
 @dataclass(slots=True)
@@ -53,6 +77,12 @@ class ProductionOverviewReader:
         if rect is None:
             return None
         return self.capture.capture_client_bbox(rect)
+
+    def _capture_screen(self) -> Image.Image | None:
+        capture_screen = getattr(self.capture, "capture_screen", None)
+        if not callable(capture_screen):
+            return None
+        return capture_screen()
 
     @staticmethod
     def _image_mean_abs_diff(previous: Image.Image | None, current: Image.Image | None) -> float:
@@ -148,14 +178,17 @@ class ProductionOverviewReader:
 
     @classmethod
     def _popup_recipe_entries(cls) -> tuple[_SmeltRecipePopupEntry, ...]:
-        return tuple(
-            _SmeltRecipePopupEntry(
-                output_name=name,
-                ore_icon_box=ore_icon_box,
-                output_icon_box=output_icon_box,
+        names = tuple(bars_data.list_bars())
+        entries: list[_SmeltRecipePopupEntry] = []
+        for output_name, (ore_icon_box, output_icon_box) in zip(names, _SMELT_RECIPE_SLOT_LAYOUT_PAGE0):
+            entries.append(
+                _SmeltRecipePopupEntry(
+                    output_name=output_name,
+                    ore_icon_box=ore_icon_box,
+                    output_icon_box=output_icon_box,
+                )
             )
-            for name, ore_icon_box, output_icon_box in _SMELT_RECIPE_LAYOUT
-        )
+        return tuple(entries)
 
     @staticmethod
     def _border_median(arr: np.ndarray) -> np.ndarray:
@@ -267,6 +300,53 @@ class ProductionOverviewReader:
         return max(candidates, key=lambda image: image.size[0] * image.size[1])
 
     @staticmethod
+    def _tooltip_icon_regions(*, tab: str, card_size: tuple[int, int]) -> tuple[_TooltipIconRegion, ...]:
+        width, height = card_size
+
+        def _box(left: float, top: float, right: float, bottom: float) -> tuple[int, int, int, int]:
+            x1 = max(0, min(width - 1, int(round(width * left))))
+            y1 = max(0, min(height - 1, int(round(height * top))))
+            x2 = max(x1 + 1, min(width, int(round(width * right))))
+            y2 = max(y1 + 1, min(height, int(round(height * bottom))))
+            return (x1, y1, x2, y2)
+
+        if tab == "smelt":
+            return (
+                _TooltipIconRegion(kind="bar", box=_box(0.50, 0.24, 0.76, 0.46)),
+                _TooltipIconRegion(kind="ore", box=_box(0.06, 0.24, 0.29, 0.46)),
+            )
+        return (
+            _TooltipIconRegion(kind="output", box=_box(0.56, 0.25, 0.81, 0.49)),
+            _TooltipIconRegion(kind="bar", box=_box(0.14, 0.31, 0.39, 0.56)),
+            _TooltipIconRegion(kind="ore", box=_box(0.18, 0.06, 0.40, 0.24)),
+        )
+
+    @staticmethod
+    def _tooltip_probe_points(icon_box: tuple[int, int, int, int]) -> tuple[tuple[int, int], ...]:
+        x1, y1, x2, y2 = icon_box
+        width = max(1, x2 - x1)
+        height = max(1, y2 - y1)
+        return tuple(
+            (
+                int(x1 + round(width * x_fraction)),
+                int(y1 + round(height * y_fraction)),
+            )
+            for x_fraction, y_fraction in _TOOLTIP_PROBE_POINT_FRACTIONS
+        )
+
+    @staticmethod
+    def _tooltip_crop_box(icon_box: tuple[int, int, int, int], *, card_size: tuple[int, int]) -> tuple[int, int, int, int]:
+        card_width, card_height = card_size
+        x1, y1, x2, _y2 = icon_box
+        crop = (
+            max(0, x1 - 78),
+            max(0, y1 - 36),
+            min(card_width, x2 + 16),
+            min(card_height, y1 + 14),
+        )
+        return crop
+
+    @staticmethod
     def _material_aliases(name: str) -> list[str]:
         normalized_name = str(name or "").strip()
         aliases = [normalized_name]
@@ -304,6 +384,87 @@ class ProductionOverviewReader:
             if template is not None:
                 return template
         return None
+
+    @staticmethod
+    def _normalize_tooltip_text(text: str | None) -> str:
+        return re.sub(r"\s+", " ", re.sub(r"[^A-Z0-9 ]+", " ", str(text or "").upper())).strip()
+
+    @classmethod
+    def _known_tooltip_labels(cls) -> dict[str, str]:
+        lookup: dict[str, str] = {}
+        known_names = list(RESOURCE_ROW_NAMES) + list(bars_data.list_bars()) + list(items_data.list_items())
+        for name in known_names:
+            for alias in cls._material_aliases(name):
+                normalized = cls._normalize_tooltip_text(alias)
+                if normalized and normalized not in lookup:
+                    lookup[normalized] = name
+                compact = normalized.replace(" ", "")
+                if compact and compact not in lookup:
+                    lookup[compact] = name
+        return lookup
+
+    @classmethod
+    def _match_tooltip_label(cls, text: str | None) -> str | None:
+        normalized = cls._normalize_tooltip_text(text)
+        if not normalized:
+            return None
+        lookup = cls._known_tooltip_labels()
+        return lookup.get(normalized) or lookup.get(normalized.replace(" ", ""))
+
+    def _resolve_smelt_tooltip_output(self, *, tooltip_label: str, templates: dict[str, Image.Image]) -> str | None:
+        if self._lookup_template(templates, tooltip_label) is not None:
+            for alias in self._material_aliases(tooltip_label):
+                if alias in templates:
+                    return alias
+        normalized_label = self._match_tooltip_label(tooltip_label)
+        if normalized_label is None:
+            return None
+        for output_name in templates:
+            expected_inputs = self._expected_input_names(tab="smelt", output_name=output_name)
+            if len(expected_inputs) != 1:
+                continue
+            if normalized_label in self._material_aliases(expected_inputs[0]):
+                return output_name
+        return None
+
+    def _probe_tooltip_identity(
+        self,
+        *,
+        rect_key: str,
+        tab: str,
+        templates: dict[str, Image.Image],
+    ) -> tuple[str, str]:
+        rect = getattr(self.rects, "get", lambda _key: None)(rect_key)
+        if rect is None:
+            raise ValueError(f"missing_rect:{rect_key}")
+        card_x, card_y, card_w, card_h = rect
+        for region in self._tooltip_icon_regions(tab=tab, card_size=(card_w, card_h)):
+            crop_box = self._tooltip_crop_box(region.box, card_size=(card_w, card_h))
+            for point in self._tooltip_probe_points(region.box):
+                global_point = (int(card_x + point[0]), int(card_y + point[1]))
+                if not self.actions.click_client_point(global_point, delay=self._scroll_delay_seconds()):
+                    raise ValueError("tooltip_probe_click_failed")
+                frame = self._capture_screen()
+                if frame is None:
+                    raise ValueError("tooltip_probe_capture_unavailable")
+                tooltip = frame.crop(
+                    (
+                        int(card_x + crop_box[0]),
+                        int(card_y + crop_box[1]),
+                        int(card_x + crop_box[2]),
+                        int(card_y + crop_box[3]),
+                    )
+                )
+                result = self.perception.read_text(tooltip, prompt=_TOOLTIP_PROMPT, mode="generic")
+                matched_label = self._match_tooltip_label(getattr(result, "value", ""))
+                if matched_label is None:
+                    continue
+                if tab != "smelt":
+                    return matched_label, f"tooltip_probe_{region.kind}_{getattr(result, 'backend', '') or 'generic'}"
+                output_name = self._resolve_smelt_tooltip_output(tooltip_label=matched_label, templates=templates)
+                if output_name is not None:
+                    return output_name, f"tooltip_probe_{region.kind}_{getattr(result, 'backend', '') or 'generic'}"
+        raise ValueError("tooltip_probe_no_valid_label")
 
     @staticmethod
     def _input_search_boxes(card: Image.Image, *, tab: str) -> list[tuple[int, int, int, int]]:
@@ -591,6 +752,90 @@ class ProductionOverviewReader:
             if any(variant in normalized for variant in variants)
         }
 
+    @classmethod
+    def _smelt_recipe_popup_tile_signal_count(cls, panel: Image.Image) -> int:
+        count = 0
+        for ore_icon_box, output_icon_box in _SMELT_RECIPE_SLOT_LAYOUT_SCROLLED:
+            x1 = max(0, int(ore_icon_box[0]) - 28)
+            y1 = max(0, int(ore_icon_box[1]) - 120)
+            x2 = min(panel.size[0], int(output_icon_box[2]) + 22)
+            y2 = min(panel.size[1], int(output_icon_box[3]) + 18)
+            crop = panel.crop((x1, y1, x2, y2))
+            stats = cls._region_signal_stats(crop)
+            if stats["dynamic_range"] >= 110.0 and stats["edge_fraction"] >= 0.025:
+                count += 1
+        return count
+
+    @staticmethod
+    def _popup_panel_signature(panel: Image.Image) -> Image.Image:
+        width, height = panel.size
+        return panel.crop(
+            (
+                int(round(width * 0.12)),
+                int(round(height * 0.18)),
+                int(round(width * 0.88)),
+                int(round(height * 0.88)),
+            )
+        )
+
+    def _smelt_recipe_scroll_point(self) -> tuple[int, int]:
+        rect = getattr(self.rects, "get", lambda _key: None)("SMELT_RECIPES_PANEL")
+        if rect is None:
+            raise ValueError("missing_rect:SMELT_RECIPES_PANEL")
+        x, y, w, h = rect
+        return (int(x + (w // 2)), int(y + (h // 2)))
+
+    def _scroll_smelt_recipe_popup_down(self) -> Image.Image:
+        point = self._smelt_recipe_scroll_point()
+        before = self._capture_rect("SMELT_RECIPES_PANEL")
+        if before is None:
+            raise ValueError("missing_rect:SMELT_RECIPES_PANEL")
+        before_sig = self._popup_panel_signature(before)
+        if not self.actions.scroll_client_wheel(point, _SMELT_RECIPE_SCROLL_DELTA, delay=self._scroll_delay_seconds()):
+            raise ValueError("smelt_recipe_popup_scroll_failed")
+        after = self._capture_rect("SMELT_RECIPES_PANEL")
+        if after is None:
+            raise ValueError("missing_rect:SMELT_RECIPES_PANEL")
+        after_sig = self._popup_panel_signature(after)
+        if self._image_mean_abs_diff(before_sig, after_sig) <= 1.0:
+            raise ValueError("smelt_recipe_popup_scroll_not_observed")
+        return after
+
+    @staticmethod
+    def _smelt_recipe_page_candidates(*, page_index: int) -> tuple[_SmeltRecipePopupEntry, ...]:
+        bar_names = tuple(bars_data.list_bars())
+        if page_index <= 0:
+            visible_names = bar_names[: len(_SMELT_RECIPE_SLOT_LAYOUT_PAGE0)]
+            slot_layout = _SMELT_RECIPE_SLOT_LAYOUT_PAGE0
+        else:
+            start_index = int(page_index) * 2
+            visible_names = bar_names[start_index : start_index + len(_SMELT_RECIPE_SLOT_LAYOUT_SCROLLED)]
+            slot_layout = _SMELT_RECIPE_SLOT_LAYOUT_SCROLLED[: len(visible_names)]
+        return tuple(
+            _SmeltRecipePopupEntry(
+                output_name=output_name,
+                ore_icon_box=ore_icon_box,
+                output_icon_box=output_icon_box,
+            )
+            for output_name, (ore_icon_box, output_icon_box) in zip(visible_names, slot_layout)
+        )
+
+    def _iter_smelt_recipe_popup_pages(self) -> list[tuple[int, Image.Image]]:
+        panel = self._capture_rect("SMELT_RECIPES_PANEL")
+        if panel is None:
+            raise ValueError("missing_rect:SMELT_RECIPES_PANEL")
+        pages: list[tuple[int, Image.Image]] = [(0, panel)]
+        previous_sig = self._popup_panel_signature(panel)
+        max_pages = max(1, int((len(bars_data.list_bars()) + 1) // 2))
+        for page_index in range(1, max_pages):
+            panel = self._scroll_smelt_recipe_popup_down()
+            current_sig = self._popup_panel_signature(panel)
+            if self._image_mean_abs_diff(previous_sig, current_sig) <= 1.0:
+                break
+            pages.append((page_index, panel))
+            previous_sig = current_sig
+        return pages
+
     def _open_smelt_recipe_popup(self, *, rect_key: str) -> tuple[Image.Image, set[str]]:
         point = self._recipe_button_point(rect_key)
         if not self.actions.click_client_point(point, delay=self._scroll_delay_seconds()):
@@ -603,20 +848,25 @@ class ProductionOverviewReader:
         if "SMELT RECIPES" not in normalized:
             raise ValueError("smelt_recipe_popup_not_visible")
         verified_names = self._verified_smelt_recipe_names(panel_text)
-        if len(verified_names) < 4:
+        tile_signal_count = self._smelt_recipe_popup_tile_signal_count(panel)
+        if not verified_names and tile_signal_count < 3:
             raise ValueError(f"smelt_recipe_popup_unverified:{panel_text or 'blank'}")
         return panel, verified_names
 
     def _close_smelt_recipe_popup(self) -> None:
         if getattr(self.rects, "get", lambda _key: None)("SMELT_RECIPES_CLOSE") is None:
             raise ValueError("missing_rect:SMELT_RECIPES_CLOSE")
+        before = self._capture_rect("SMELT_RECIPES_PANEL")
+        if before is None:
+            raise ValueError("missing_rect:SMELT_RECIPES_PANEL")
+        before_sig = self._popup_panel_signature(before)
         if not self.actions.click_rect_center("SMELT_RECIPES_CLOSE", delay=self._scroll_delay_seconds()):
             raise ValueError("smelt_recipe_popup_close_failed")
-        panel = self._capture_rect("SMELT_RECIPES_PANEL")
-        if panel is None:
+        after = self._capture_rect("SMELT_RECIPES_PANEL")
+        if after is None:
             raise ValueError("missing_rect:SMELT_RECIPES_PANEL")
-        normalized = self._normalize_popup_text(self._read_smelt_recipe_popup_text(panel))
-        if "SMELT RECIPES" in normalized:
+        after_sig = self._popup_panel_signature(after)
+        if self._image_mean_abs_diff(before_sig, after_sig) <= 6.0:
             raise ValueError("smelt_recipe_popup_close_unverified")
 
     def _resolve_smelt_output_from_recipe_popup(
@@ -625,24 +875,23 @@ class ProductionOverviewReader:
         card: Image.Image,
         rect_key: str,
     ) -> tuple[str, str]:
-        panel = None
         opened = False
         try:
-            panel, verified_names = self._open_smelt_recipe_popup(rect_key=rect_key)
+            _panel, _verified_names = self._open_smelt_recipe_popup(rect_key=rect_key)
             opened = True
             target_ore = card.crop((18, 72, 78, 136))
             target_output = card.crop((132, 72, 212, 136))
+            popup_pages = self._iter_smelt_recipe_popup_pages()
             scored: list[tuple[str, float]] = []
-            for entry in self._popup_recipe_entries():
-                if entry.output_name not in verified_names:
-                    continue
-                ore_icon = panel.crop(entry.ore_icon_box)
-                output_icon = panel.crop(entry.output_icon_box)
-                ore_icon_score = self._icon_similarity(ore_icon, target_ore)
-                ore_color_score = self._color_signature_similarity(ore_icon, target_ore)
-                output_icon_score = self._icon_similarity(output_icon, target_output)
-                score = (0.62 * ore_icon_score) + (0.20 * ore_color_score) + (0.18 * output_icon_score)
-                scored.append((entry.output_name, score))
+            for page_index, panel in popup_pages:
+                for entry in self._smelt_recipe_page_candidates(page_index=page_index):
+                    ore_icon = panel.crop(entry.ore_icon_box)
+                    output_icon = panel.crop(entry.output_icon_box)
+                    ore_icon_score = self._icon_similarity(ore_icon, target_ore)
+                    ore_color_score = self._color_signature_similarity(ore_icon, target_ore)
+                    output_icon_score = self._icon_similarity(output_icon, target_output)
+                    score = (0.62 * ore_icon_score) + (0.20 * ore_color_score) + (0.18 * output_icon_score)
+                    scored.append((entry.output_name, score))
             scored.sort(key=lambda item: item[1], reverse=True)
             if not scored:
                 raise ValueError("smelt_recipe_popup_no_candidates")
@@ -655,23 +904,50 @@ class ProductionOverviewReader:
             if opened:
                 self._close_smelt_recipe_popup()
 
+    @staticmethod
+    def _signal_parts(*, fill_fraction: float, cancel_signal: bool, timer_signal: bool) -> list[str]:
+        parts: list[str] = []
+        if fill_fraction >= _ACTIVE_FILL_CONFIDENT_MIN:
+            parts.append("progress_fill_signal")
+        elif fill_fraction >= _ACTIVE_FILL_HINT_MIN:
+            parts.append("progress_fill_hint")
+        if cancel_signal:
+            parts.append("cancel_button_signal")
+        if timer_signal:
+            parts.append("timer_region_signal")
+        return parts
+
+    @classmethod
+    def _visual_active_backend(cls, *, fill_fraction: float, cancel_signal: bool, timer_signal: bool) -> str | None:
+        evidence_count = int(fill_fraction >= _ACTIVE_FILL_HINT_MIN) + int(cancel_signal) + int(timer_signal)
+        if fill_fraction >= _ACTIVE_FILL_CONFIDENT_MIN:
+            return "+".join(cls._signal_parts(fill_fraction=fill_fraction, cancel_signal=cancel_signal, timer_signal=timer_signal))
+        if evidence_count >= 2:
+            return "+".join(cls._signal_parts(fill_fraction=fill_fraction, cancel_signal=cancel_signal, timer_signal=timer_signal))
+        return None
+
     def _resolve_active_state(self, *, tab: str, card: Image.Image) -> tuple[bool, str | None, str]:
         timer_text, timer_backend = self._read_timer_text(card)
         normalized = self._normalize_timer_text(timer_text)
         fill_fraction = self._progress_fill_fraction(card)
         cancel_signal = self._cancel_button_signal(card)
         timer_signal = self._timer_region_signal(card)
-        if normalized and _TIMER_TEXT_RE.search(normalized):
+        visual_backend = self._visual_active_backend(
+            fill_fraction=fill_fraction,
+            cancel_signal=cancel_signal,
+            timer_signal=timer_signal,
+        )
+        if visual_backend is not None:
+            if normalized and _TIMER_TEXT_RE.search(normalized):
+                return True, timer_text, f"{visual_backend}+{timer_backend or 'timer_text'}"
+            return True, None, visual_backend
+        if normalized and _TIMER_TEXT_RE.search(normalized) and (cancel_signal or timer_signal or fill_fraction >= _ACTIVE_FILL_HINT_MIN):
             return True, timer_text, timer_backend or "timer_text"
-        if fill_fraction >= 0.05:
-            if normalized and normalized != "OFF" and (_TIMER_TEXT_RE.search(normalized) or normalized.endswith("S")):
-                return True, timer_text, timer_backend
-            return True, timer_text, "progress_fill_signal"
-        if tab == "craft" and cancel_signal and (timer_signal or fill_fraction >= 0.008):
-            return True, timer_text if normalized and normalized != "OFF" else None, "cancel_button_signal+timer_region_signal"
         if normalized == "OFF":
-            if not cancel_signal and not timer_signal and fill_fraction < 0.01:
+            if not cancel_signal and not timer_signal and fill_fraction < _ACTIVE_FILL_HINT_MIN:
                 return False, None, timer_backend or "timer_text"
+        if not normalized and not cancel_signal and not timer_signal and fill_fraction < _ACTIVE_FILL_HINT_MIN:
+            return False, None, "visual_idle_signal"
         raise ValueError(f"unreadable_active_state:{normalized or 'blank'}")
 
     def _read_card(
@@ -724,12 +1000,21 @@ class ProductionOverviewReader:
             if tab != "smelt" or not str(exc).startswith("ambiguous_output_match:"):
                 raise
             try:
-                output_name, match_backend = self._resolve_smelt_output_from_recipe_popup(
-                    card=card,
+                output_name, match_backend = self._probe_tooltip_identity(
                     rect_key=rect_key,
+                    tab=tab,
+                    templates=templates,
                 )
-            except Exception as popup_exc:
-                raise ValueError(f"smelt_recipe_popup_fallback_failed:{popup_exc}") from popup_exc
+            except Exception as tooltip_exc:
+                try:
+                    output_name, match_backend = self._resolve_smelt_output_from_recipe_popup(
+                        card=card,
+                        rect_key=rect_key,
+                    )
+                except Exception as popup_exc:
+                    raise ValueError(
+                        f"smelt_tooltip_fallback_failed:{tooltip_exc};smelt_recipe_popup_fallback_failed:{popup_exc}"
+                    ) from popup_exc
         active, timer_text, state_backend = self._resolve_active_state(tab=tab, card=card)
         backend_parts = [part for part in (match_backend, quantity_backend, input_quantity_backend, state_backend) if part]
         return ProductionOverviewCardState(
@@ -782,7 +1067,7 @@ class ProductionOverviewReader:
         previous = None
         best_candidate = None
         best_diff = 1e9
-        for _ in range(8):
+        for _ in range(_PRODUCTION_TOP_SCROLL_MAX_ATTEMPTS):
             if not self.actions.scroll_client_wheel(point, 120, delay=self._scroll_delay_seconds()):
                 raise ValueError("production_scroll_up_failed")
             current = self._capture_rect("PRODUCTION_CARD1")
@@ -809,7 +1094,7 @@ class ProductionOverviewReader:
         top_anchor_frame = self._top_anchor_frame(top_anchor)
         best_diff = 1e9
         best_current = None
-        for _ in range(8):
+        for _ in range(_PRODUCTION_TOP_SCROLL_MAX_ATTEMPTS):
             current = self._capture_rect("PRODUCTION_CARD1")
             current_frame = self._top_anchor_frame(current)
             diff = self._image_mean_abs_diff(top_anchor_frame, current_frame)
@@ -855,8 +1140,9 @@ class ProductionOverviewReader:
         try:
             cards.extend(
                 [
-                    self._read_card(slot_index=3, tab=tab, rect_key="PRODUCTION_CARD3", templates=templates, inventory_counts=inventory_counts, input_templates=input_templates, ore_inventory_counts=ore_inventory_counts),
-                    self._read_card(slot_index=4, tab=tab, rect_key="PRODUCTION_CARD4", templates=templates, inventory_counts=inventory_counts, input_templates=input_templates, ore_inventory_counts=ore_inventory_counts),
+                    # After one wheel-down, the next visible card pair occupies the upper view slots.
+                    self._read_card(slot_index=3, tab=tab, rect_key="PRODUCTION_CARD1", templates=templates, inventory_counts=inventory_counts, input_templates=input_templates, ore_inventory_counts=ore_inventory_counts),
+                    self._read_card(slot_index=4, tab=tab, rect_key="PRODUCTION_CARD2", templates=templates, inventory_counts=inventory_counts, input_templates=input_templates, ore_inventory_counts=ore_inventory_counts),
                 ]
             )
         finally:

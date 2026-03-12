@@ -580,7 +580,18 @@ def test_production_overview_reader_generates_named_tooltip_probe_points():
 def test_production_overview_reader_computes_local_tooltip_crop_box():
     crop_box = ProductionOverviewReader._tooltip_crop_box((60, 80, 95, 120), card_size=(240, 295))
 
-    assert crop_box == (0, 44, 111, 94)
+    assert crop_box == (99, 70, 213, 108)
+
+
+def test_production_overview_reader_generates_ordered_tooltip_crop_candidates():
+    candidates = ProductionOverviewReader._tooltip_crop_candidates((60, 80, 95, 120), card_size=(240, 295))
+
+    assert [(candidate.crop_id, candidate.box) for candidate in candidates] == [
+        ("right_of_icon", (99, 70, 213, 108)),
+        ("upper_right", (87, 46, 205, 86)),
+        ("above_icon", (42, 42, 177, 84)),
+        ("right_centered", (97, 80, 215, 118)),
+    ]
 
 
 def test_production_overview_reader_stops_on_first_valid_tooltip_label(monkeypatch):
@@ -612,7 +623,47 @@ def test_production_overview_reader_stops_on_first_valid_tooltip_label(monkeypat
 
     assert output_name == "Lead Bar"
     assert backend == "tooltip_probe_bar_fake"
-    assert len(reader.actions.clicks) == 2
+    assert len(reader.actions.clicks) == 1
+    assert reader.perception.calls == 2
+
+
+def test_production_overview_reader_stops_on_first_valid_tooltip_crop(monkeypatch):
+    card = Image.new("RGB", (240, 295), "#112244")
+    frame = Image.new("RGB", (240, 295), "#223355")
+    crop_sequence = []
+
+    class _TooltipPerception:
+        def __init__(self):
+            self.calls = 0
+
+        def read_text(self, image, *, prompt, mode):
+            _ = prompt, mode
+            self.calls += 1
+            crop_sequence.append(image.size)
+            value = "Lead" if self.calls == 2 else "noise"
+            return type("Result", (), {"value": value, "backend": "fake"})()
+
+    reader = ProductionOverviewReader(
+        rects=_FakeRects(),
+        capture=_FakeCapture([card], screen_frames=[frame, frame, frame]),
+        actions=_FakeActions(),
+        perception=_TooltipPerception(),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_tooltip_icon_regions",
+        staticmethod(lambda *, tab, card_size: (type("Region", (), {"kind": "bar", "box": (120, 71, 182, 136)})(),)),
+    )
+
+    output_name, backend = reader._probe_tooltip_identity(
+        rect_key="PRODUCTION_CARD1",
+        tab="smelt",
+        templates={"Lead Bar": Image.new("RGB", (10, 10), "gray")},
+    )
+
+    assert output_name == "Lead Bar"
+    assert backend == "tooltip_probe_bar_fake"
+    assert crop_sequence == [(54, 38), (66, 40)]
 
 
 def test_production_overview_reader_rejects_invalid_tooltip_text():
@@ -637,6 +688,41 @@ def test_production_overview_reader_rejects_invalid_tooltip_text():
             tab="smelt",
             templates={"Lead Bar": Image.new("RGB", (10, 10), "gray")},
         )
+
+
+def test_production_overview_reader_rejects_invalid_tooltip_text_across_all_crops(monkeypatch):
+    card = Image.new("RGB", (240, 295), "#112244")
+    frame = Image.new("RGB", (240, 295), "#223355")
+
+    class _TooltipPerception:
+        def __init__(self):
+            self.calls = 0
+
+        def read_text(self, image, *, prompt, mode):
+            _ = image, prompt, mode
+            self.calls += 1
+            return type("Result", (), {"value": "Inventory Editor", "backend": "fake"})()
+
+    reader = ProductionOverviewReader(
+        rects=_FakeRects(),
+        capture=_FakeCapture([card], screen_frames=[frame, frame, frame]),
+        actions=_FakeActions(),
+        perception=_TooltipPerception(),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_tooltip_icon_regions",
+        staticmethod(lambda *, tab, card_size: (type("Region", (), {"kind": "bar", "box": (120, 71, 182, 136)})(),)),
+    )
+
+    with pytest.raises(ValueError, match="tooltip_probe_no_valid_label"):
+        reader._probe_tooltip_identity(
+            rect_key="PRODUCTION_CARD1",
+            tab="smelt",
+            templates={"Lead Bar": Image.new("RGB", (10, 10), "gray")},
+        )
+
+    assert reader.perception.calls == 12
 
 
 def test_production_overview_reader_fails_closed_without_screen_capture():
@@ -678,10 +764,11 @@ def test_production_overview_reader_writes_tooltip_probe_audit_artifacts(tmp_pat
         output_dir=tmp_path,
     )
 
-    assert len(attempts) == 6
-    assert attempts[0]["label"] == "smelt_PRODUCTION_CARD1_bar_center"
+    assert len(attempts) == 24
+    assert attempts[0]["label"] == "smelt_PRODUCTION_CARD1_bar_center_right_of_icon"
     assert attempts[0]["icon_box"] == (120, 71, 182, 136)
-    assert attempts[0]["tooltip_crop_box"] == (42, 35, 198, 85)
+    assert attempts[0]["tooltip_crop_box"] == (186, 61, 240, 99)
+    assert attempts[0]["crop_id"] == "right_of_icon"
     assert Path(str(attempts[0]["overlay_artifact"])).exists()
     assert Path(str(attempts[0]["tooltip_artifact"])).exists()
 

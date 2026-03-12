@@ -71,6 +71,12 @@ class _TooltipProbePoint:
     point: tuple[int, int]
 
 
+@dataclass(slots=True, frozen=True)
+class _TooltipCropCandidate:
+    crop_id: str
+    box: tuple[int, int, int, int]
+
+
 @dataclass(slots=True)
 class ProductionOverviewReader:
     rects: object
@@ -349,15 +355,44 @@ class ProductionOverviewReader:
 
     @staticmethod
     def _tooltip_crop_box(icon_box: tuple[int, int, int, int], *, card_size: tuple[int, int]) -> tuple[int, int, int, int]:
+        return ProductionOverviewReader._tooltip_crop_candidates(icon_box, card_size=card_size)[0].box
+
+    @staticmethod
+    def _tooltip_crop_candidates(
+        icon_box: tuple[int, int, int, int],
+        *,
+        card_size: tuple[int, int],
+    ) -> tuple[_TooltipCropCandidate, ...]:
         card_width, card_height = card_size
-        x1, y1, x2, _y2 = icon_box
-        crop = (
-            max(0, x1 - 78),
-            max(0, y1 - 36),
-            min(card_width, x2 + 16),
-            min(card_height, y1 + 14),
+        x1, y1, x2, y2 = icon_box
+        icon_height = max(1, y2 - y1)
+        center_y = y1 + (icon_height // 2)
+
+        def _clip(left: int, top: int, right: int, bottom: int) -> tuple[int, int, int, int]:
+            clipped_left = max(0, min(card_width - 1, int(left)))
+            clipped_top = max(0, min(card_height - 1, int(top)))
+            clipped_right = max(clipped_left + 1, min(card_width, int(right)))
+            clipped_bottom = max(clipped_top + 1, min(card_height, int(bottom)))
+            return (clipped_left, clipped_top, clipped_right, clipped_bottom)
+
+        return (
+            _TooltipCropCandidate(
+                crop_id="right_of_icon",
+                box=_clip(x2 + 4, y1 - 10, x2 + 118, y1 + 28),
+            ),
+            _TooltipCropCandidate(
+                crop_id="upper_right",
+                box=_clip(x2 - 8, y1 - 34, x2 + 110, y1 + 6),
+            ),
+            _TooltipCropCandidate(
+                crop_id="above_icon",
+                box=_clip(x1 - 18, y1 - 38, x2 + 82, y1 + 4),
+            ),
+            _TooltipCropCandidate(
+                crop_id="right_centered",
+                box=_clip(x2 + 2, center_y - 20, x2 + 120, center_y + 18),
+            ),
         )
-        return crop
 
     @staticmethod
     def _material_aliases(name: str) -> list[str]:
@@ -452,7 +487,6 @@ class ProductionOverviewReader:
             raise ValueError(f"missing_rect:{rect_key}")
         card_x, card_y, card_w, card_h = rect
         for region in self._tooltip_icon_regions(tab=tab, card_size=(card_w, card_h)):
-            crop_box = self._tooltip_crop_box(region.box, card_size=(card_w, card_h))
             for probe in self._tooltip_probe_point_specs(region.box):
                 point = probe.point
                 global_point = (int(card_x + point[0]), int(card_y + point[1]))
@@ -461,28 +495,30 @@ class ProductionOverviewReader:
                 frame = self._capture_screen()
                 if frame is None:
                     raise ValueError("tooltip_probe_capture_unavailable")
-                tooltip = frame.crop(
-                    (
-                        int(card_x + crop_box[0]),
-                        int(card_y + crop_box[1]),
-                        int(card_x + crop_box[2]),
-                        int(card_y + crop_box[3]),
+                for crop_candidate in self._tooltip_crop_candidates(region.box, card_size=(card_w, card_h)):
+                    crop_box = crop_candidate.box
+                    tooltip = frame.crop(
+                        (
+                            int(card_x + crop_box[0]),
+                            int(card_y + crop_box[1]),
+                            int(card_x + crop_box[2]),
+                            int(card_y + crop_box[3]),
+                        )
                     )
-                )
-                result = self.perception.read_text(tooltip, prompt=_TOOLTIP_PROMPT, mode="generic")
-                matched_label = self._match_tooltip_label(getattr(result, "value", ""))
-                if matched_label is None:
-                    continue
-                if tab != "smelt":
-                    return matched_label, f"tooltip_probe_{region.kind}_{getattr(result, 'backend', '') or 'generic'}"
-                output_name = self._resolve_smelt_tooltip_output(tooltip_label=matched_label, templates=templates)
-                if output_name is not None:
-                    return output_name, f"tooltip_probe_{region.kind}_{getattr(result, 'backend', '') or 'generic'}"
+                    result = self.perception.read_text(tooltip, prompt=_TOOLTIP_PROMPT, mode="generic")
+                    matched_label = self._match_tooltip_label(getattr(result, "value", ""))
+                    if matched_label is None:
+                        continue
+                    if tab != "smelt":
+                        return matched_label, f"tooltip_probe_{region.kind}_{getattr(result, 'backend', '') or 'generic'}"
+                    output_name = self._resolve_smelt_tooltip_output(tooltip_label=matched_label, templates=templates)
+                    if output_name is not None:
+                        return output_name, f"tooltip_probe_{region.kind}_{getattr(result, 'backend', '') or 'generic'}"
         raise ValueError("tooltip_probe_no_valid_label")
 
     @staticmethod
-    def _tooltip_probe_artifact_label(*, tab: str, rect_key: str, icon_kind: str, point_id: str) -> str:
-        return f"{tab}_{rect_key}_{icon_kind}_{point_id}"
+    def _tooltip_probe_artifact_label(*, tab: str, rect_key: str, icon_kind: str, point_id: str, crop_id: str) -> str:
+        return f"{tab}_{rect_key}_{icon_kind}_{point_id}_{crop_id}"
 
     @staticmethod
     def _draw_crosshair(draw: ImageDraw.ImageDraw, point: tuple[int, int], *, color: str) -> None:
@@ -541,55 +577,58 @@ class ProductionOverviewReader:
         output_root.mkdir(parents=True, exist_ok=True)
         attempts: list[dict[str, str | tuple[int, int] | tuple[int, int, int, int] | bool | None]] = []
         for region in self._tooltip_icon_regions(tab=tab, card_size=(card_w, card_h)):
-            crop_box = self._tooltip_crop_box(region.box, card_size=(card_w, card_h))
             for probe in self._tooltip_probe_point_specs(region.box):
                 global_point = (int(card_x + probe.point[0]), int(card_y + probe.point[1]))
                 click_ok = bool(self.actions.click_client_point(global_point, delay=self._scroll_delay_seconds()))
                 frame = self._capture_screen()
                 if frame is None:
                     raise ValueError("tooltip_probe_capture_unavailable")
-                label = self._tooltip_probe_artifact_label(
-                    tab=tab,
-                    rect_key=rect_key,
-                    icon_kind=region.kind,
-                    point_id=probe.point_id,
-                )
-                overlay = self._render_tooltip_probe_audit_overlay(
-                    frame=frame,
-                    card_rect=rect,
-                    icon_box=region.box,
-                    probe_point=probe.point,
-                    tooltip_crop_box=crop_box,
-                    label=label,
-                )
-                overlay_path = output_root / f"{label}_overlay.png"
-                tooltip_path = output_root / f"{label}_tooltip.png"
-                overlay.save(overlay_path)
-                tooltip = frame.crop(
-                    (
-                        int(card_x + crop_box[0]),
-                        int(card_y + crop_box[1]),
-                        int(card_x + crop_box[2]),
-                        int(card_y + crop_box[3]),
+                for crop_candidate in self._tooltip_crop_candidates(region.box, card_size=(card_w, card_h)):
+                    crop_box = crop_candidate.box
+                    label = self._tooltip_probe_artifact_label(
+                        tab=tab,
+                        rect_key=rect_key,
+                        icon_kind=region.kind,
+                        point_id=probe.point_id,
+                        crop_id=crop_candidate.crop_id,
                     )
-                )
-                tooltip.save(tooltip_path)
-                attempts.append(
-                    {
-                        "label": label,
-                        "tab": tab,
-                        "rect_key": rect_key,
-                        "icon_kind": region.kind,
-                        "point_id": probe.point_id,
-                        "probe_point": probe.point,
-                        "global_point": global_point,
-                        "icon_box": region.box,
-                        "tooltip_crop_box": crop_box,
-                        "click_ok": click_ok,
-                        "overlay_artifact": str(overlay_path),
-                        "tooltip_artifact": str(tooltip_path),
-                    }
-                )
+                    overlay = self._render_tooltip_probe_audit_overlay(
+                        frame=frame,
+                        card_rect=rect,
+                        icon_box=region.box,
+                        probe_point=probe.point,
+                        tooltip_crop_box=crop_box,
+                        label=label,
+                    )
+                    overlay_path = output_root / f"{label}_overlay.png"
+                    tooltip_path = output_root / f"{label}_tooltip.png"
+                    overlay.save(overlay_path)
+                    tooltip = frame.crop(
+                        (
+                            int(card_x + crop_box[0]),
+                            int(card_y + crop_box[1]),
+                            int(card_x + crop_box[2]),
+                            int(card_y + crop_box[3]),
+                        )
+                    )
+                    tooltip.save(tooltip_path)
+                    attempts.append(
+                        {
+                            "label": label,
+                            "tab": tab,
+                            "rect_key": rect_key,
+                            "icon_kind": region.kind,
+                            "point_id": probe.point_id,
+                            "crop_id": crop_candidate.crop_id,
+                            "probe_point": probe.point,
+                            "global_point": global_point,
+                            "icon_box": region.box,
+                            "tooltip_crop_box": crop_box,
+                            "click_ok": click_ok,
+                            "overlay_artifact": str(overlay_path),
+                            "tooltip_artifact": str(tooltip_path),
+                        }
+                    )
         return attempts
 
     @staticmethod

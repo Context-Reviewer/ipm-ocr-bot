@@ -11,6 +11,7 @@ from ipm.perception import (
 )
 from ipm.readers.common import parse_alpha_label, parse_compact_number
 from ipm.readers import OrePanelReader, PlanetPanelReader, SellDialogReader
+from ipm.readers.panel_text import ParsedPlanetPanel
 from ipm.rects import RectStore
 
 
@@ -540,6 +541,55 @@ def test_planet_panel_reader_scan_mode_emits_observability_event_for_suspicious_
     }
 
 
+def test_planet_panel_reader_scan_mode_accepts_leading_o_prefix_noise_without_panel_parse():
+    cfg = RuntimeConfig()
+    rects = RectStore(
+        path=None,
+        rects={
+            "PLANET_PANEL_TEXT": (0, 0, 1, 1),
+            "PLANET_TITLE": (0, 0, 1, 1),
+            "UPGRADE_MINING": (0, 0, 1, 1),
+            "UPGRADE_SPEED": (0, 0, 1, 1),
+            "UPGRADE_CARGO": (0, 0, 1, 1),
+        },
+    )
+    events = []
+    perception = TrackingNumericBackend(
+        name="windows",
+        mapping={
+            (cfg.perception.prompt_planet_title, "planet_title"): "O. SOLVEIG",
+            (cfg.perception.prompt_numeric, "numeric"): "999999",
+            (cfg.perception.prompt_planet_panel, "planet_panel"): "should not be used",
+        },
+    )
+    reader = PlanetPanelReader(
+        cfg,
+        rects,
+        FakeCapture(),
+        perception,
+        observer=lambda event, **payload: events.append((event, payload)),
+    )
+    state = reader.read_for_scan(cash=100)
+    assert state.title == "O. SOLVEIG"
+    assert state.planet_id is None
+    assert ("planet_panel" not in [mode for _prompt, mode in perception.calls])
+    assert len(events) == 1
+    event_name, payload = events[0]
+    assert event_name == "planet_panel_scan_read"
+    assert payload["used_full_panel_parse"] is False
+    assert payload["panel_class"] == "seed_only"
+    assert payload["title_trust"]["direct"] == {
+        "raw_title": "O. SOLVEIG",
+        "sanitized_title": "O. SOLVEIG",
+        "normalized_title": "Solveig",
+        "planet_id": None,
+        "expected_planet_id": 10,
+        "trustworthy": True,
+        "trust_reason": "",
+    }
+    assert payload["title_trust"]["legacy_retry"] is None
+
+
 def test_planet_panel_reader_scan_mode_accepts_colony_level_title_without_panel_parse():
     cfg = RuntimeConfig()
     rects = RectStore(
@@ -787,6 +837,23 @@ def test_planet_panel_reader_scan_mode_emits_title_trust_evidence_for_untrusted_
         "sanitized_title": "2. SOLVEIG",
         "normalized_title": "Solveig",
         "planet_id": 2,
+        "expected_planet_id": 10,
+        "trustworthy": False,
+        "trust_reason": "planet_id_mismatch",
+    }
+
+
+def test_scan_seed_title_trust_details_rejects_zero_prefixed_solveig():
+    trust = PlanetPanelReader._scan_seed_title_trust_details(
+        ParsedPlanetPanel(
+            title="0. SOLVEIG",
+            planet_id=0,
+        )
+    )
+    assert trust == {
+        "sanitized_title": "0. SOLVEIG",
+        "normalized_title": "Solveig",
+        "planet_id": 0,
         "expected_planet_id": 10,
         "trustworthy": False,
         "trust_reason": "planet_id_mismatch",

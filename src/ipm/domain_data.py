@@ -129,6 +129,8 @@ PLANET_NAMES: tuple[str, ...] = (
 )
 
 _PLANET_PREFIX_RE = re.compile(r"^\s*\d+\s*[\.:]\s*")
+_PLANET_OCR_PREFIX_RE = re.compile(r"^\s*O\s*[\.:]\s*")
+_PLANET_COLONY_SUFFIX_RE = re.compile(r"\s+COLONY\s+LV\.?\s*\d+\s*$")
 _ORE_TOKEN_RE = re.compile(r"[^A-Z]+")
 _PLANET_TOKEN_RE = re.compile(r"[^A-Z]+")
 _PLANET_TITLE_ALLOWED_RE = re.compile(r"^[A-Z0-9 .'-]+$")
@@ -224,6 +226,8 @@ def is_known_resource_row_name(text: str | None) -> bool:
 
 def strip_planet_title_decoration(text: str | None) -> str:
     candidate = _PLANET_PREFIX_RE.sub("", _ascii_upper(text))
+    candidate = _PLANET_OCR_PREFIX_RE.sub("", candidate)
+    candidate = _PLANET_COLONY_SUFFIX_RE.sub("", candidate)
     candidate = re.sub(r"\s+", " ", candidate).strip(" .:-'")
     return candidate.strip()
 

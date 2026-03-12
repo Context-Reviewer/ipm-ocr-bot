@@ -40,6 +40,19 @@ def test_normalize_planet_name_handles_numbered_titles():
     assert "Acheron" in PLANET_NAMES
 
 
+def test_normalize_planet_name_strips_leading_o_prefix_noise_for_known_title():
+    assert normalize_planet_name("O. SOLVEIG") == "Solveig"
+
+
+def test_normalize_planet_name_strips_colony_level_suffix():
+    assert normalize_planet_name("1. BALOR Colony Lv 1") == "Balor"
+
+
+def test_normalize_planet_name_keeps_existing_decoration_only_cases():
+    assert normalize_planet_name(". YANGTZE") == "Yangtze"
+    assert normalize_planet_name(". ACHERON") == "Acheron"
+
+
 def test_planet_title_plausibility_rejects_sentence_and_keeps_operational_titles():
     assert is_plausible_planet_title("8. ACHERON") is True
     assert is_plausible_planet_title("8. ACHEAON") is True

@@ -46,6 +46,29 @@ def _inventory_aliases(known_names: list[str]) -> dict[str, str]:
     return aliases
 
 
+def _template_bank_with_aliases(templates: dict[str, object]) -> dict[str, object]:
+    augmented = dict(templates)
+    for name, image in list(templates.items()):
+        normalized_name = str(name or "").strip()
+        if not normalized_name:
+            continue
+        normalized_resource = normalize_resource_row_name(normalized_name)
+        if normalized_resource and normalized_resource not in augmented:
+            augmented[normalized_resource] = image
+        explicit_aliases = {
+            "Silicon": "Silica",
+            "Silica": "Silicon",
+            "Aluminum": "Aluminium",
+            "Aluminium": "Aluminum",
+            "Aluminum Bar": "Aluminium Bar",
+            "Aluminium Bar": "Aluminum Bar",
+        }
+        alias_name = explicit_aliases.get(normalized_name)
+        if alias_name and alias_name not in augmented:
+            augmented[alias_name] = image
+    return augmented
+
+
 def _merge_inventory_rows(
     current: dict[str, int],
     page_rows: dict[int, Any],
@@ -225,6 +248,16 @@ class ProductionFloorLiveStateReader:
             seam_status["active_smelter_assignments"] = self._overview_seam_blocker(kind="smelt", blocker=blocker)
             seam_status["active_crafter_assignments"] = self._overview_seam_blocker(kind="craft", blocker=blocker)
         try:
+            ore_templates: dict[str, object] = {}
+            try:
+                _ores, ore_templates = self._read_inventory_tab(
+                    tab_name="ores",
+                    open_tab=self.actions.open_ores_panel,
+                    known_names=list(RESOURCE_ROW_NAMES),
+                    template_row_names=list(RESOURCE_ROW_NAMES)[:5],
+                )
+            except Exception:
+                ore_templates = {}
             bars, bar_templates = self._read_inventory_tab(
                 tab_name="bars",
                 open_tab=self.actions.open_alloys_panel,
@@ -240,6 +273,9 @@ class ProductionFloorLiveStateReader:
             )
             smelter_queue: dict[str, int] = {}
             crafter_queue: dict[str, int] = {}
+            ore_templates = _template_bank_with_aliases(ore_templates)
+            bar_templates = _template_bank_with_aliases(bar_templates)
+            item_templates = _template_bank_with_aliases(item_templates)
             if production_reader is not None and not missing_overview_rects:
                 try:
                     smelter_cards = production_reader.read_cards(
@@ -247,6 +283,7 @@ class ProductionFloorLiveStateReader:
                         open_tab=self.actions.open_smelter_panel,
                         templates={name: image for name, image in bar_templates.items() if name in allowed_overview_outputs("smelt")},
                         inventory_counts=bars,
+                        input_templates=ore_templates,
                     )
                     smelter_queue = parse_active_overview_cards(
                         smelter_cards,
@@ -262,11 +299,16 @@ class ProductionFloorLiveStateReader:
                         blocker=str(exc),
                     )
                 try:
+                    craft_input_templates = {}
+                    craft_input_templates.update(bar_templates)
+                    craft_input_templates.update(item_templates)
+                    craft_input_templates.update(ore_templates)
                     crafter_cards = production_reader.read_cards(
                         tab="craft",
                         open_tab=self.actions.open_crafter_panel,
                         templates={name: image for name, image in item_templates.items() if name in allowed_overview_outputs("craft")},
                         inventory_counts=items,
+                        input_templates=craft_input_templates,
                     )
                     crafter_queue = parse_active_overview_cards(
                         crafter_cards,

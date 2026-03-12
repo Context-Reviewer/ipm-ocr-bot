@@ -7,6 +7,9 @@ import cv2
 import numpy as np
 from PIL import Image, ImageChops, ImageStat
 
+import bars_data
+import items_data
+from ..domain_data import normalize_resource_row_name
 from ..state import ProductionOverviewCardState
 from .common import parse_compact_number
 
@@ -14,6 +17,7 @@ _TIMER_TEXT_RE = re.compile(r"[0-9].*[SMH]|[0-9]+:[0-9]+", re.IGNORECASE)
 _TIMER_PROMPT = "Read only the visible timer text or OFF. Return only the timer text."
 _COUNT_PROMPT = "Read only the visible output quantity. Keep suffixes like K or M if present."
 _PRODUCTION_SCROLL_DELAY_SECONDS = 0.35
+_INPUT_SIGNAL_WEIGHT = 0.35
 
 
 @dataclass(slots=True)
@@ -184,6 +188,124 @@ class ProductionOverviewReader:
             return None
         return max(candidates, key=lambda image: image.size[0] * image.size[1])
 
+    @staticmethod
+    def _material_aliases(name: str) -> list[str]:
+        normalized_name = str(name or "").strip()
+        aliases = [normalized_name]
+        if not normalized_name:
+            return aliases
+        normalized_resource = normalize_resource_row_name(normalized_name)
+        if normalized_resource and normalized_resource not in aliases:
+            aliases.append(normalized_resource)
+        explicit_aliases = {
+            "Silicon": "Silica",
+            "Silica": "Silicon",
+            "Aluminum": "Aluminium",
+            "Aluminium": "Aluminum",
+            "Aluminum Bar": "Aluminium Bar",
+            "Aluminium Bar": "Aluminum Bar",
+        }
+        alias_name = explicit_aliases.get(normalized_name)
+        if alias_name and alias_name not in aliases:
+            aliases.append(alias_name)
+        for suffix in (" Bar", " Alloy"):
+            if not normalized_name.endswith(suffix):
+                continue
+            base_name = normalized_name[: -len(suffix)].strip()
+            normalized_base = normalize_resource_row_name(base_name)
+            if normalized_base:
+                candidate = f"{normalized_base}{suffix}"
+                if candidate not in aliases:
+                    aliases.append(candidate)
+        return aliases
+
+    @classmethod
+    def _lookup_template(cls, templates: dict[str, Image.Image], name: str) -> Image.Image | None:
+        for alias in cls._material_aliases(name):
+            template = templates.get(alias)
+            if template is not None:
+                return template
+        return None
+
+    @staticmethod
+    def _input_search_box(card: Image.Image, *, tab: str) -> tuple[int, int, int, int]:
+        width, height = card.size
+        if tab == "smelt":
+            fractions = (0.00, 0.19, 0.38, 0.53)
+        else:
+            fractions = (0.19, 0.10, 0.52, 0.53)
+        left, top, right, bottom = fractions
+        return (
+            int(round(width * left)),
+            int(round(height * top)),
+            int(round(width * right)),
+            int(round(height * bottom)),
+        )
+
+    @classmethod
+    def _template_presence_score(cls, *, template: Image.Image, search: Image.Image) -> float:
+        search_rgb = np.asarray(search.convert("RGB"), dtype=np.uint8)
+        if search_rgb.size == 0:
+            return 0.0
+        search_gray = cv2.cvtColor(search_rgb, cv2.COLOR_RGB2GRAY)
+        search_edge = cv2.Canny(cv2.GaussianBlur(search_gray, (3, 3), 0), 30, 100)
+        template_rgb = np.asarray(cls._extract_template_icon(template).convert("RGB"), dtype=np.uint8)
+        best_score = -1.0
+        for scale in (0.70, 0.85, 1.00, 1.15, 1.30, 1.45):
+            width = max(12, int(round(template_rgb.shape[1] * scale)))
+            height = max(12, int(round(template_rgb.shape[0] * scale)))
+            if width >= search_rgb.shape[1] or height >= search_rgb.shape[0]:
+                continue
+            resized = cv2.resize(template_rgb, (width, height), interpolation=cv2.INTER_LINEAR)
+            template_gray = cv2.cvtColor(resized, cv2.COLOR_RGB2GRAY)
+            template_edge = cv2.Canny(cv2.GaussianBlur(template_gray, (3, 3), 0), 30, 100)
+            raw_result = cv2.matchTemplate(search_gray, template_gray, cv2.TM_CCOEFF_NORMED)
+            edge_result = cv2.matchTemplate(search_edge, template_edge, cv2.TM_CCOEFF_NORMED)
+            _, raw_score, _, _ = cv2.minMaxLoc(raw_result)
+            _, edge_score, _, _ = cv2.minMaxLoc(edge_result)
+            best_score = max(best_score, (0.45 * float(raw_score)) + (0.55 * float(edge_score)))
+        return max(0.0, best_score)
+
+    @staticmethod
+    def _expected_input_names(*, tab: str, output_name: str) -> tuple[str, ...]:
+        if tab == "smelt":
+            data = bars_data.get_bar(output_name) or {}
+        else:
+            data = items_data.get_item(output_name) or {}
+        inputs = tuple(str(name).strip() for name in (data.get("inputs") or {}).keys() if str(name).strip())
+        return inputs
+
+    def _input_identity_bonus(
+        self,
+        *,
+        tab: str,
+        output_name: str,
+        card: Image.Image,
+        input_templates: dict[str, Image.Image],
+    ) -> tuple[float, str]:
+        if not input_templates:
+            return 0.0, ""
+        expected_inputs = self._expected_input_names(tab=tab, output_name=output_name)
+        if tab == "craft" and len(expected_inputs) < 2:
+            return 0.0, ""
+        if tab == "craft":
+            expected_inputs = expected_inputs[:2]
+        if tab == "smelt":
+            expected_inputs = expected_inputs[:1]
+        resolved_templates: list[Image.Image] = []
+        for input_name in expected_inputs:
+            template = self._lookup_template(input_templates, input_name)
+            if template is None:
+                return 0.0, ""
+            resolved_templates.append(template)
+        search = card.crop(self._input_search_box(card, tab=tab))
+        if not resolved_templates:
+            return 0.0, ""
+        scores = [self._template_presence_score(template=template, search=search) for template in resolved_templates]
+        if tab == "craft" and len(scores) < 2:
+            return 0.0, ""
+        return _INPUT_SIGNAL_WEIGHT * float(sum(scores) / len(scores)), "input_template_match"
+
     @classmethod
     def _icon_similarity(cls, template: Image.Image, target: Image.Image) -> float:
         template_work = cls._extract_template_icon(template).resize((56, 56)).convert("RGB")
@@ -212,33 +334,41 @@ class ProductionOverviewReader:
     def _resolve_output_name(
         self,
         *,
+        tab: str,
         card: Image.Image,
         templates: dict[str, Image.Image],
         inventory_counts: dict[str, int],
         output_quantity: int | None,
+        input_templates: dict[str, Image.Image] | None = None,
     ) -> tuple[str, str]:
         target_icons = self._candidate_output_icons(card)
         if not target_icons:
             raise ValueError("output_icon_not_found")
-        scored = sorted(
-            (
-                (
-                    name,
-                    max(self._icon_similarity(template, target_icon) for target_icon in target_icons)
-                    + self._quantity_match_bonus(name, quantity=output_quantity, inventory_counts=inventory_counts),
-                )
-                for name, template in templates.items()
-            ),
-            key=lambda item: item[1],
-            reverse=True,
-        )
+        scored = []
+        for name, template in templates.items():
+            input_bonus, input_backend = self._input_identity_bonus(
+                tab=tab,
+                output_name=name,
+                card=card,
+                input_templates=input_templates or {},
+            )
+            score = (
+                max(self._icon_similarity(template, target_icon) for target_icon in target_icons)
+                + self._quantity_match_bonus(name, quantity=output_quantity, inventory_counts=inventory_counts)
+                + input_bonus
+            )
+            scored.append((name, score, input_backend))
+        scored.sort(key=lambda item: item[1], reverse=True)
         if not scored:
             raise ValueError("icon_templates_missing")
-        top_name, top_score = scored[0]
+        top_name, top_score, top_input_backend = scored[0]
         next_score = scored[1][1] if len(scored) > 1 else 0.0
         if top_score < 0.80 or (top_score - next_score) < 0.018:
             raise ValueError(f"ambiguous_output_match:{top_name}:{top_score:.4f}:{next_score:.4f}")
-        return top_name, "icon_template_match"
+        backend = "icon_template_match"
+        if top_input_backend:
+            backend = f"{backend}+{top_input_backend}"
+        return top_name, backend
 
     def _resolve_active_state(self, card: Image.Image) -> tuple[bool, str | None, str]:
         timer_text, timer_backend = self._read_timer_text(card)
@@ -262,6 +392,7 @@ class ProductionOverviewReader:
         rect_key: str,
         templates: dict[str, Image.Image],
         inventory_counts: dict[str, int],
+        input_templates: dict[str, Image.Image] | None = None,
     ) -> ProductionOverviewCardState:
         card = self._capture_rect(rect_key)
         if card is None:
@@ -287,10 +418,12 @@ class ProductionOverviewReader:
             )
         output_quantity, quantity_backend = self._read_output_quantity(card)
         output_name, match_backend = self._resolve_output_name(
+            tab=tab,
             card=card,
             templates=templates,
             inventory_counts=inventory_counts,
             output_quantity=output_quantity,
+            input_templates=input_templates,
         )
         active, timer_text, state_backend = self._resolve_active_state(card)
         backend_parts = [part for part in (match_backend, quantity_backend, state_backend) if part]
@@ -385,6 +518,7 @@ class ProductionOverviewReader:
         open_tab,
         templates: dict[str, Image.Image],
         inventory_counts: dict[str, int],
+        input_templates: dict[str, Image.Image] | None = None,
     ) -> list[ProductionOverviewCardState]:
         for rect_key in ("PRODUCTION_CARD1", "PRODUCTION_CARD2", "PRODUCTION_CARD3", "PRODUCTION_CARD4"):
             if getattr(self.rects, "get", lambda _key: None)(rect_key) is None:
@@ -395,15 +529,15 @@ class ProductionOverviewReader:
             raise ValueError(f"open_tab_failed:{tab}")
         top_anchor = self._scroll_to_top_view()
         cards = [
-            self._read_card(slot_index=1, tab=tab, rect_key="PRODUCTION_CARD1", templates=templates, inventory_counts=inventory_counts),
-            self._read_card(slot_index=2, tab=tab, rect_key="PRODUCTION_CARD2", templates=templates, inventory_counts=inventory_counts),
+            self._read_card(slot_index=1, tab=tab, rect_key="PRODUCTION_CARD1", templates=templates, inventory_counts=inventory_counts, input_templates=input_templates),
+            self._read_card(slot_index=2, tab=tab, rect_key="PRODUCTION_CARD2", templates=templates, inventory_counts=inventory_counts, input_templates=input_templates),
         ]
         self._scroll_to_lower_cards(top_anchor=top_anchor)
         try:
             cards.extend(
                 [
-                    self._read_card(slot_index=3, tab=tab, rect_key="PRODUCTION_CARD3", templates=templates, inventory_counts=inventory_counts),
-                    self._read_card(slot_index=4, tab=tab, rect_key="PRODUCTION_CARD4", templates=templates, inventory_counts=inventory_counts),
+                    self._read_card(slot_index=3, tab=tab, rect_key="PRODUCTION_CARD3", templates=templates, inventory_counts=inventory_counts, input_templates=input_templates),
+                    self._read_card(slot_index=4, tab=tab, rect_key="PRODUCTION_CARD4", templates=templates, inventory_counts=inventory_counts, input_templates=input_templates),
                 ]
             )
         finally:

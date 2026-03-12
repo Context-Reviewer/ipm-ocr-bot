@@ -37,6 +37,11 @@ class FakeActions:
         self.page_index = 0
         return True
 
+    def open_ores_panel(self):
+        self.current_tab = "ores"
+        self.page_index = 0
+        return True
+
     def open_items_panel(self):
         self.current_tab = "items"
         self.page_index = 0
@@ -63,6 +68,14 @@ class FakeInventoryReader:
     def __init__(self, actions):
         self.actions = actions
         self.pages = {
+            ("ores", 0): {
+                1: InventoryRowState(name="Copper", quantity=500, backend="fake"),
+                2: InventoryRowState(name="Iron", quantity=250, backend="fake"),
+            },
+            ("ores", 1): {
+                1: InventoryRowState(name="Copper", quantity=500, backend="fake"),
+                2: InventoryRowState(name="Iron", quantity=250, backend="fake"),
+            },
             ("bars", 0): {
                 1: InventoryRowState(name="Copper Bar", quantity=12, backend="fake"),
                 2: InventoryRowState(name="Iron Bar", quantity=7, backend="fake"),
@@ -89,13 +102,14 @@ class FakeInventoryReader:
 
 
 class FakeProductionReader:
-    def read_cards(self, *, tab, open_tab, templates, inventory_counts):
+    def read_cards(self, *, tab, open_tab, templates, inventory_counts, input_templates=None):
         if not open_tab():
             raise ValueError("open_tab_failed")
         if not templates:
             raise ValueError("missing_templates")
         if not inventory_counts:
             raise ValueError("missing_inventory")
+        _ = input_templates
         if tab == "smelt":
             return [
                 ProductionOverviewCardState(slot_index=1, tab="smelt", output_name="Lead Bar", active=False, timer_text=None, backend="fake"),

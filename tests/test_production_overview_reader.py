@@ -157,3 +157,21 @@ def test_production_overview_reader_scrolls_to_top_without_icon_latch():
 
     assert top_anchor is not None
     assert top_anchor.tobytes() == frame_b.tobytes()
+
+
+def test_production_overview_reader_scrolls_back_to_top_with_best_anchor_fallback():
+    top_frame = Image.new("RGB", (240, 295), "#345678")
+    lower_frame = Image.new("RGB", (240, 295), "#111111")
+    noisy_frame = Image.new("RGB", (240, 295), "#222222")
+    near_top_frame = top_frame.copy()
+    near_top_frame.paste(Image.new("RGB", (20, 20), "#355779"), (5, 5))
+    reader = ProductionOverviewReader(
+        rects=_FakeRects(),
+        capture=_FakeCapture([lower_frame, noisy_frame, near_top_frame, noisy_frame]),
+        actions=_FakeActions(),
+        perception=_FakePerception(),
+    )
+
+    reader._scroll_back_to_top(top_anchor=top_frame)
+
+    assert len(reader.actions.scrolls) >= 1

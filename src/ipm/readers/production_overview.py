@@ -561,14 +561,26 @@ class ProductionOverviewReader:
             return
         point = self._wheel_point()
         top_anchor_frame = self._top_anchor_frame(top_anchor)
-        for _ in range(5):
+        best_diff = 1e9
+        best_current = None
+        for _ in range(8):
             current = self._capture_rect("PRODUCTION_CARD1")
-            if self._image_mean_abs_diff(top_anchor_frame, self._top_anchor_frame(current)) <= 1.0:
+            current_frame = self._top_anchor_frame(current)
+            diff = self._image_mean_abs_diff(top_anchor_frame, current_frame)
+            if current is not None and diff < best_diff:
+                best_diff = diff
+                best_current = current
+            if diff <= 1.0:
                 return
             if not self.actions.scroll_client_wheel(point, 120, delay=self._scroll_delay_seconds()):
                 break
         current = self._capture_rect("PRODUCTION_CARD1")
-        if self._image_mean_abs_diff(top_anchor_frame, self._top_anchor_frame(current)) > 1.0:
+        current_diff = self._image_mean_abs_diff(top_anchor_frame, self._top_anchor_frame(current))
+        if current_diff <= 1.0:
+            return
+        if best_current is not None and best_diff <= 1.2 and self._card_status(best_current) == "card":
+            return
+        if current_diff > 1.0:
             raise ValueError("production_scroll_up_failed")
 
     def read_cards(

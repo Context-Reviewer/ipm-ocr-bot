@@ -68,6 +68,45 @@ class ProductionOverviewReader:
             return 0.0
         return float(np.mean((arr[..., 1] >= 140) & (arr[..., 2] >= 140) & (arr[..., 0] <= 120)))
 
+    @staticmethod
+    def _region_signal_stats(image: Image.Image) -> dict[str, float]:
+        grayscale = image.convert("L")
+        histogram = grayscale.histogram()
+        total = max(1.0, float(sum(histogram)))
+        gray_arr = np.asarray(grayscale, dtype=np.uint8)
+        rgb_arr = np.asarray(image.convert("RGB"), dtype=np.uint8)
+        edge = cv2.Canny(gray_arr, 40, 120) if gray_arr.size else np.zeros((0, 0), dtype=np.uint8)
+        extrema = grayscale.getextrema()
+        return {
+            "dynamic_range": float(int(extrema[1]) - int(extrema[0])),
+            "bright_fraction": sum(float(histogram[index]) for index in range(170, 256)) / total,
+            "dark_fraction": sum(float(histogram[index]) for index in range(0, 80)) / total,
+            "edge_fraction": float(np.mean(edge > 0)) if edge.size else 0.0,
+            "cyan_fraction": float(
+                np.mean((rgb_arr[..., 1] >= 130) & (rgb_arr[..., 2] >= 130) & (rgb_arr[..., 0] <= 120))
+            )
+            if rgb_arr.size
+            else 0.0,
+        }
+
+    @classmethod
+    def _cancel_button_signal(cls, card: Image.Image) -> bool:
+        stats = cls._region_signal_stats(card.crop((185, 145, 225, 185)))
+        return (
+            stats["dynamic_range"] >= 160.0
+            and stats["bright_fraction"] >= 0.09
+            and stats["dark_fraction"] <= 0.20
+            and stats["edge_fraction"] >= 0.10
+        )
+
+    @classmethod
+    def _timer_region_signal(cls, card: Image.Image) -> bool:
+        stats = cls._region_signal_stats(card.crop((55, 145, 185, 205)))
+        return stats["dynamic_range"] >= 240.0 and (
+            stats["cyan_fraction"] >= 0.10
+            or (stats["edge_fraction"] >= 0.068 and stats["bright_fraction"] >= 0.03)
+        )
+
     def _read_timer_text(self, card: Image.Image) -> tuple[str | None, str]:
         crop = card.crop((55, 145, 185, 205))
         result = self.perception.read_text(crop, prompt=_TIMER_PROMPT, mode="generic")
@@ -228,19 +267,29 @@ class ProductionOverviewReader:
         return None
 
     @staticmethod
-    def _input_search_box(card: Image.Image, *, tab: str) -> tuple[int, int, int, int]:
+    def _input_search_boxes(card: Image.Image, *, tab: str) -> list[tuple[int, int, int, int]]:
         width, height = card.size
         if tab == "smelt":
-            fractions = (0.00, 0.19, 0.38, 0.53)
+            fractions = [
+                (0.00, 0.19, 0.38, 0.53),
+                (0.00, 0.24, 0.26, 0.50),
+                (0.06, 0.22, 0.34, 0.50),
+            ]
         else:
-            fractions = (0.19, 0.10, 0.52, 0.53)
-        left, top, right, bottom = fractions
-        return (
-            int(round(width * left)),
-            int(round(height * top)),
-            int(round(width * right)),
-            int(round(height * bottom)),
-        )
+            fractions = [
+                (0.19, 0.10, 0.52, 0.53),
+            ]
+        boxes: list[tuple[int, int, int, int]] = []
+        for left, top, right, bottom in fractions:
+            boxes.append(
+                (
+                    int(round(width * left)),
+                    int(round(height * top)),
+                    int(round(width * right)),
+                    int(round(height * bottom)),
+                )
+            )
+        return boxes
 
     @classmethod
     def _template_presence_score(cls, *, template: Image.Image, search: Image.Image) -> float:
@@ -298,13 +347,18 @@ class ProductionOverviewReader:
             if template is None:
                 return 0.0, ""
             resolved_templates.append(template)
-        search = card.crop(self._input_search_box(card, tab=tab))
         if not resolved_templates:
             return 0.0, ""
-        scores = [self._template_presence_score(template=template, search=search) for template in resolved_templates]
-        if tab == "craft" and len(scores) < 2:
+        box_scores: list[float] = []
+        for search_box in self._input_search_boxes(card, tab=tab):
+            search = card.crop(search_box)
+            scores = [self._template_presence_score(template=template, search=search) for template in resolved_templates]
+            if tab == "craft" and len(scores) < 2:
+                continue
+            box_scores.append(float(sum(scores) / len(scores)))
+        if not box_scores:
             return 0.0, ""
-        return _INPUT_SIGNAL_WEIGHT * float(sum(scores) / len(scores)), "input_template_match"
+        return _INPUT_SIGNAL_WEIGHT * max(box_scores), "input_template_match"
 
     @classmethod
     def _icon_similarity(cls, template: Image.Image, target: Image.Image) -> float:
@@ -370,18 +424,23 @@ class ProductionOverviewReader:
             backend = f"{backend}+{top_input_backend}"
         return top_name, backend
 
-    def _resolve_active_state(self, card: Image.Image) -> tuple[bool, str | None, str]:
+    def _resolve_active_state(self, *, tab: str, card: Image.Image) -> tuple[bool, str | None, str]:
         timer_text, timer_backend = self._read_timer_text(card)
         normalized = self._normalize_timer_text(timer_text)
         fill_fraction = self._progress_fill_fraction(card)
+        cancel_signal = self._cancel_button_signal(card)
+        timer_signal = self._timer_region_signal(card)
         if normalized and _TIMER_TEXT_RE.search(normalized):
             return True, timer_text, timer_backend or "timer_text"
         if fill_fraction >= 0.05:
             if normalized and normalized != "OFF" and (_TIMER_TEXT_RE.search(normalized) or normalized.endswith("S")):
                 return True, timer_text, timer_backend
             return True, timer_text, "progress_fill_signal"
+        if tab == "craft" and cancel_signal and (timer_signal or fill_fraction >= 0.008):
+            return True, timer_text if normalized and normalized != "OFF" else None, "cancel_button_signal+timer_region_signal"
         if normalized == "OFF":
-            return False, None, timer_backend or "timer_text"
+            if not cancel_signal and not timer_signal and fill_fraction < 0.01:
+                return False, None, timer_backend or "timer_text"
         raise ValueError(f"unreadable_active_state:{normalized or 'blank'}")
 
     def _read_card(
@@ -425,7 +484,7 @@ class ProductionOverviewReader:
             output_quantity=output_quantity,
             input_templates=input_templates,
         )
-        active, timer_text, state_backend = self._resolve_active_state(card)
+        active, timer_text, state_backend = self._resolve_active_state(tab=tab, card=card)
         backend_parts = [part for part in (match_backend, quantity_backend, state_backend) if part]
         return ProductionOverviewCardState(
             slot_index=slot_index,
@@ -469,7 +528,7 @@ class ProductionOverviewReader:
         if not self.actions.scroll_client_wheel(point, -120, delay=self._scroll_delay_seconds()):
             raise ValueError("production_scroll_down_failed")
         current = self._capture_rect("PRODUCTION_CARD1")
-        if self._image_mean_abs_diff(top_anchor, current) <= 1.0:
+        if self._image_mean_abs_diff(self._top_anchor_frame(top_anchor), self._top_anchor_frame(current)) <= 1.0:
             raise ValueError("production_scroll_down_not_observed")
 
     def _scroll_to_top_view(self) -> Image.Image | None:
@@ -501,14 +560,15 @@ class ProductionOverviewReader:
         if top_anchor is None:
             return
         point = self._wheel_point()
-        for _ in range(3):
+        top_anchor_frame = self._top_anchor_frame(top_anchor)
+        for _ in range(5):
             current = self._capture_rect("PRODUCTION_CARD1")
-            if self._image_mean_abs_diff(top_anchor, current) <= 1.0:
+            if self._image_mean_abs_diff(top_anchor_frame, self._top_anchor_frame(current)) <= 1.0:
                 return
             if not self.actions.scroll_client_wheel(point, 120, delay=self._scroll_delay_seconds()):
                 break
         current = self._capture_rect("PRODUCTION_CARD1")
-        if self._image_mean_abs_diff(top_anchor, current) > 1.0:
+        if self._image_mean_abs_diff(top_anchor_frame, self._top_anchor_frame(current)) > 1.0:
             raise ValueError("production_scroll_up_failed")
 
     def read_cards(

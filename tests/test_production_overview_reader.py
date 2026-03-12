@@ -73,6 +73,46 @@ def test_production_overview_reader_uses_input_signal_to_break_icon_tie(monkeypa
     assert backend == "icon_template_match+input_template_match"
 
 
+def test_production_overview_reader_uses_craft_visual_active_fallback(monkeypatch):
+    reader = ProductionOverviewReader(
+        rects=None,
+        capture=None,
+        actions=None,
+        perception=_FakePerception(),
+    )
+    card = Image.new("RGB", (240, 295), "black")
+    monkeypatch.setattr(ProductionOverviewReader, "_read_timer_text", lambda self, image: ("797/5", "fake"))
+    monkeypatch.setattr(ProductionOverviewReader, "_progress_fill_fraction", staticmethod(lambda image: 0.012))
+    monkeypatch.setattr(ProductionOverviewReader, "_cancel_button_signal", classmethod(lambda cls, image: True))
+    monkeypatch.setattr(ProductionOverviewReader, "_timer_region_signal", classmethod(lambda cls, image: True))
+
+    active, timer_text, backend = reader._resolve_active_state(tab="craft", card=card)
+
+    assert active is True
+    assert timer_text == "797/5"
+    assert backend == "cancel_button_signal+timer_region_signal"
+
+
+def test_production_overview_reader_keeps_off_without_visual_signals_inactive(monkeypatch):
+    reader = ProductionOverviewReader(
+        rects=None,
+        capture=None,
+        actions=None,
+        perception=_FakePerception(),
+    )
+    card = Image.new("RGB", (240, 295), "black")
+    monkeypatch.setattr(ProductionOverviewReader, "_read_timer_text", lambda self, image: ("OFF", "fake"))
+    monkeypatch.setattr(ProductionOverviewReader, "_progress_fill_fraction", staticmethod(lambda image: 0.0))
+    monkeypatch.setattr(ProductionOverviewReader, "_cancel_button_signal", classmethod(lambda cls, image: False))
+    monkeypatch.setattr(ProductionOverviewReader, "_timer_region_signal", classmethod(lambda cls, image: False))
+
+    active, timer_text, backend = reader._resolve_active_state(tab="craft", card=card)
+
+    assert active is False
+    assert timer_text is None
+    assert backend == "fake"
+
+
 class _FakeActions:
     def __init__(self):
         self.scrolls = []

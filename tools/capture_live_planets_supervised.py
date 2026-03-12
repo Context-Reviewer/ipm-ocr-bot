@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 import json
+import signal
 import sys
 import time
 import traceback
@@ -125,6 +126,10 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     tmp_path = path.with_name(f"{path.name}.tmp")
     tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     tmp_path.replace(path)
+
+
+def _raise_keyboard_interrupt(_signum, _frame) -> None:
+    raise KeyboardInterrupt()
 
 
 def _session_run_summary_payload(run_payload: dict[str, Any]) -> dict[str, Any]:
@@ -346,6 +351,7 @@ def _session_summary_payload(
     limits: dict[str, Any],
     watchdog_state: dict[str, Any] | None = None,
     watchdog_trigger: dict[str, Any] | None = None,
+    stop_details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     no_op_count = 0
     action_bearing_count = 0
@@ -416,6 +422,7 @@ def _session_summary_payload(
         "last_action_bearing_cycle_at": last_action_bearing_cycle_at,
         "last_exception_at": last_exception_at,
         "stop_reason": stop_reason,
+        "stop_details": stop_details,
         "limits": limits,
         "watchdog_state": watchdog_state or _empty_watchdog_state(),
         "watchdog_trigger": watchdog_trigger,
@@ -463,89 +470,135 @@ def run_supervised_session(
     watchdog_state = _empty_watchdog_state()
     watchdog_trigger: dict[str, Any] | None = None
     stop_reason = "running"
+    stop_details: dict[str, Any] | None = None
+    cycle_phase = "startup"
+    last_completed_run_index = 0
+    previous_sigbreak_handler = None
 
     app = build_application()
     cycle_index = 0
-    while True:
-        cycle_index += 1
-        run_payload: dict[str, Any] = {
-            "run_index": cycle_index,
-            "timestamp": datetime.now().isoformat(timespec="seconds"),
-            "repo": repo,
-            "artifact_write_ok": True,
-            "task_exception": False,
-        }
-        cycle_write_failed = False
-        try:
-            focus_result = ensure_focus_result(app.config.focus)
-            run_payload["focus"] = _focus_payload(focus_result)
-            if not focus_result.ok:
+    if hasattr(signal, "SIGBREAK"):
+        previous_sigbreak_handler = signal.getsignal(signal.SIGBREAK)
+        signal.signal(signal.SIGBREAK, _raise_keyboard_interrupt)
+    try:
+        while True:
+            cycle_index += 1
+            cycle_phase = "active_cycle"
+            run_payload: dict[str, Any] = {
+                "run_index": cycle_index,
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+                "repo": repo,
+                "artifact_write_ok": True,
+                "task_exception": False,
+            }
+            cycle_write_failed = False
+            try:
+                focus_result = ensure_focus_result(app.config.focus)
+                run_payload["focus"] = _focus_payload(focus_result)
+                if not focus_result.ok:
+                    run_payload["duration_seconds"] = None
+                    run_payload["task"] = None
+                    run_payload["error"] = "focus_unavailable"
+                    consecutive_focus_unavailable += 1
+                    consecutive_task_exceptions = 0
+                else:
+                    consecutive_focus_unavailable = 0
+                    started = time.perf_counter()
+                    result = app.tasks["planets"].run()
+                    run_payload["duration_seconds"] = round(time.perf_counter() - started, 3)
+                    run_payload["task"] = {
+                        "ok": bool(result.ok),
+                        "details": result.details,
+                    }
+                    run_payload["error"] = None
+                    consecutive_task_exceptions = 0
+            except Exception as exc:
                 run_payload["duration_seconds"] = None
                 run_payload["task"] = None
-                run_payload["error"] = "focus_unavailable"
-                consecutive_focus_unavailable += 1
-                consecutive_task_exceptions = 0
-            else:
+                run_payload["error"] = repr(exc)
+                run_payload["traceback"] = traceback.format_exc()
+                run_payload["task_exception"] = True
+                consecutive_task_exceptions += 1
                 consecutive_focus_unavailable = 0
-                started = time.perf_counter()
-                result = app.tasks["planets"].run()
-                run_payload["duration_seconds"] = round(time.perf_counter() - started, 3)
-                run_payload["task"] = {
-                    "ok": bool(result.ok),
-                    "details": result.details,
-                }
-                run_payload["error"] = None
-                consecutive_task_exceptions = 0
-        except Exception as exc:
-            run_payload["duration_seconds"] = None
-            run_payload["task"] = None
-            run_payload["error"] = repr(exc)
-            run_payload["traceback"] = traceback.format_exc()
-            run_payload["task_exception"] = True
-            consecutive_task_exceptions += 1
-            consecutive_focus_unavailable = 0
 
-        run_path = session_dir / f"task_run{cycle_index}.json"
-        try:
-            _write_json_atomic(run_path, run_payload)
-            run_payload["artifact_path"] = str(run_path)
-        except Exception as exc:
-            cycle_write_failed = True
-            run_payload["artifact_write_ok"] = False
-            run_payload["artifact_write_error"] = repr(exc)
-            run_payload["artifact_write_traceback"] = traceback.format_exc()
-            print(f"ARTIFACT_WRITE_FAILED path={run_path} error={exc!r}", file=sys.stderr)
+            run_path = session_dir / f"task_run{cycle_index}.json"
+            try:
+                _write_json_atomic(run_path, run_payload)
+                run_payload["artifact_path"] = str(run_path)
+            except Exception as exc:
+                cycle_write_failed = True
+                run_payload["artifact_write_ok"] = False
+                run_payload["artifact_write_error"] = repr(exc)
+                run_payload["artifact_write_traceback"] = traceback.format_exc()
+                print(f"ARTIFACT_WRITE_FAILED path={run_path} error={exc!r}", file=sys.stderr)
 
-        run_payloads.append(run_payload)
-        if cycle_write_failed:
-            consecutive_artifact_write_failures += 1
-        else:
-            consecutive_artifact_write_failures = 0
+            run_payloads.append(run_payload)
+            if cycle_write_failed:
+                consecutive_artifact_write_failures += 1
+            else:
+                consecutive_artifact_write_failures = 0
 
-        watchdog_state = _update_watchdog_state(
-            watchdog_state,
-            run_payload=run_payload,
-            slow_no_op_threshold_seconds=slow_no_op_threshold_seconds,
-        )
-
-        if max_runs and cycle_index >= max_runs:
-            stop_reason = "max_runs_reached"
-        elif consecutive_focus_unavailable >= max_consecutive_focus_unavailable:
-            stop_reason = "repeated_focus_unavailable"
-        elif consecutive_task_exceptions >= max_consecutive_task_exceptions:
-            stop_reason = "repeated_task_exceptions"
-        elif consecutive_artifact_write_failures >= max_consecutive_artifact_write_failures:
-            stop_reason = "repeated_artifact_write_failures"
-        else:
-            stop_reason, watchdog_trigger = _evaluate_watchdog_stop(
-                watchdog_state=watchdog_state,
-                max_consecutive_dominant_panel_class=max_consecutive_dominant_panel_class,
-                max_consecutive_dominant_escalation_reason=max_consecutive_dominant_escalation_reason,
-                max_consecutive_slow_no_op=max_consecutive_slow_no_op,
+            watchdog_state = _update_watchdog_state(
+                watchdog_state,
+                run_payload=run_payload,
                 slow_no_op_threshold_seconds=slow_no_op_threshold_seconds,
             )
-            stop_reason = stop_reason or "running"
 
+            if max_runs and cycle_index >= max_runs:
+                stop_reason = "max_runs_reached"
+            elif consecutive_focus_unavailable >= max_consecutive_focus_unavailable:
+                stop_reason = "repeated_focus_unavailable"
+            elif consecutive_task_exceptions >= max_consecutive_task_exceptions:
+                stop_reason = "repeated_task_exceptions"
+            elif consecutive_artifact_write_failures >= max_consecutive_artifact_write_failures:
+                stop_reason = "repeated_artifact_write_failures"
+            else:
+                stop_reason, watchdog_trigger = _evaluate_watchdog_stop(
+                    watchdog_state=watchdog_state,
+                    max_consecutive_dominant_panel_class=max_consecutive_dominant_panel_class,
+                    max_consecutive_dominant_escalation_reason=max_consecutive_dominant_escalation_reason,
+                    max_consecutive_slow_no_op=max_consecutive_slow_no_op,
+                    slow_no_op_threshold_seconds=slow_no_op_threshold_seconds,
+                )
+                stop_reason = stop_reason or "running"
+
+            summary = _session_summary_payload(
+                started_at=session_started_at,
+                output_dir=session_dir,
+                repo=repo,
+                runs=run_payloads,
+                stop_reason=stop_reason,
+                limits=limits,
+                watchdog_state=watchdog_state,
+                watchdog_trigger=watchdog_trigger,
+                stop_details=stop_details,
+            )
+            try:
+                _write_json_atomic(summary_path, summary)
+            except Exception as exc:
+                print(f"SESSION_SUMMARY_WRITE_FAILED path={summary_path} error={exc!r}", file=sys.stderr)
+                raise
+
+            last_completed_run_index = cycle_index
+            print(f"WROTE={run_path}")
+            print(f"SUMMARY={summary_path}")
+            if stop_reason != "running":
+                break
+            if sleep_seconds > 0.0:
+                cycle_phase = "sleep"
+                time.sleep(sleep_seconds)
+    except KeyboardInterrupt:
+        stop_reason = "operator_interrupt"
+        stop_details = {
+            "kind": "operator_interrupt",
+            "phase": "sleep" if cycle_phase == "sleep" else "active_cycle",
+            "last_completed_run_index": last_completed_run_index,
+        }
+        print(
+            f"STOP reason=operator_interrupt phase={stop_details['phase']} "
+            f"last_completed_run_index={last_completed_run_index}"
+        )
+    if stop_reason == "operator_interrupt":
         summary = _session_summary_payload(
             started_at=session_started_at,
             output_dir=session_dir,
@@ -555,19 +608,16 @@ def run_supervised_session(
             limits=limits,
             watchdog_state=watchdog_state,
             watchdog_trigger=watchdog_trigger,
+            stop_details=stop_details,
         )
         try:
             _write_json_atomic(summary_path, summary)
         except Exception as exc:
             print(f"SESSION_SUMMARY_WRITE_FAILED path={summary_path} error={exc!r}", file=sys.stderr)
             raise
-
-        print(f"WROTE={run_path}")
         print(f"SUMMARY={summary_path}")
-        if stop_reason != "running":
-            break
-        if sleep_seconds > 0.0:
-            time.sleep(sleep_seconds)
+    if previous_sigbreak_handler is not None:
+        signal.signal(signal.SIGBREAK, previous_sigbreak_handler)
 
     return session_dir
 

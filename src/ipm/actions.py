@@ -103,6 +103,16 @@ class ActionDriver:
         ok = self.send_key(self.config.actions.items_tab_key, delay=self.config.actions.menu_delay_seconds) and ok
         return ok
 
+    def open_smelter_panel(self) -> bool:
+        ok = self.send_key(self.config.actions.open_production_key, delay=self.config.actions.menu_delay_seconds)
+        ok = self.send_key(self.config.actions.smelt_tab_key, delay=self.config.actions.menu_delay_seconds) and ok
+        return ok
+
+    def open_crafter_panel(self) -> bool:
+        ok = self.send_key(self.config.actions.open_production_key, delay=self.config.actions.menu_delay_seconds)
+        ok = self.send_key(self.config.actions.craft_tab_key, delay=self.config.actions.menu_delay_seconds) and ok
+        return ok
+
     def close_ores_panel(self) -> None:
         # The ores task always opens the Resources panel first, so one toggle closes it.
         self.send_key(self.config.actions.open_resources_key, delay=self.config.actions.menu_delay_seconds)

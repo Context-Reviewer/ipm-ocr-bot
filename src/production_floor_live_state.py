@@ -10,10 +10,7 @@ import bars_data
 import items_data
 from ipm.domain_data import RESOURCE_ROW_NAMES, normalize_resource_row_name
 from ipm.readers.inventory_panel import InventoryPanelReader
-
-_PRODUCTION_ASSIGNMENT_BLOCKER = (
-    "blocked: no calibrated production list text/row rects and no verified production assignment parser exist"
-)
+from production_assignment_seams import inspect_production_assignment_seams
 
 
 def _alloy_inventory_names() -> list[str]:
@@ -149,15 +146,14 @@ class ProductionFloorLiveStateReader:
 
     def read(self) -> dict[str, Any]:
         alloy_names = _alloy_inventory_names()
+        assignment_seams = inspect_production_assignment_seams(
+            rects=self.rects,
+            actions=self.actions,
+            visible_rows=max(1, int(getattr(self.config, "visible_ore_rows", 1) or 1)),
+        )
         seam_status = {
-            "active_smelter_assignments": {
-                "feasible": False,
-                "blocker": _PRODUCTION_ASSIGNMENT_BLOCKER,
-            },
-            "active_crafter_assignments": {
-                "feasible": False,
-                "blocker": _PRODUCTION_ASSIGNMENT_BLOCKER,
-            },
+            "active_smelter_assignments": assignment_seams["smelter"],
+            "active_crafter_assignments": assignment_seams["crafter"],
             "current_bar_inventory": {
                 "feasible": True,
                 "blocker": "",

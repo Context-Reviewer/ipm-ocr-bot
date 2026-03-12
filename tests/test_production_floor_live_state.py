@@ -34,8 +34,17 @@ class FakeActions:
         self.page_index = 0
         return True
 
+    def open_smelter_panel(self):
+        return True
+
+    def open_crafter_panel(self):
+        return True
+
     def scroll_resource_list_down(self):
         self.page_index += 1
+        return True
+
+    def scroll_resource_list_up(self):
         return True
 
     def reset_ui(self):
@@ -99,11 +108,63 @@ def test_production_floor_live_state_reads_bars_and_items_and_reports_assignment
     assert result["seam_status"] == {
         "active_smelter_assignments": {
             "feasible": False,
-            "blocker": "blocked: no calibrated production list text/row rects and no verified production assignment parser exist",
+            "blocker": (
+                "missing calibrated rects: PRODUCTION_PANEL_TEXT, PRODUCTION_TOP_ANCHOR, "
+                "PRODUCTION_ROW1_READ, PRODUCTION_ROW2_READ, PRODUCTION_ROW1_ACTIVE, PRODUCTION_ROW2_ACTIVE"
+            ),
+            "reader_contract": (
+                "read each visible production row as ProductionAssignmentRowState(name=<canonical output>, active=<bool>, backend=<reader>)"
+            ),
+            "parser_contract": "aggregate only active rows into dict[output_name, active_count]",
+            "parser_helper_available": True,
+            "required_rect_groups": {
+                "panel_text": ["PRODUCTION_PANEL_TEXT"],
+                "top_anchor": ["PRODUCTION_TOP_ANCHOR"],
+                "row_labels": ["PRODUCTION_ROW1_READ", "PRODUCTION_ROW2_READ"],
+                "row_active_indicators": ["PRODUCTION_ROW1_ACTIVE", "PRODUCTION_ROW2_ACTIVE"],
+            },
+            "missing_rects": [
+                "PRODUCTION_PANEL_TEXT",
+                "PRODUCTION_TOP_ANCHOR",
+                "PRODUCTION_ROW1_READ",
+                "PRODUCTION_ROW2_READ",
+                "PRODUCTION_ROW1_ACTIVE",
+                "PRODUCTION_ROW2_ACTIVE",
+            ],
+            "navigation": {
+                "open_smelter_panel": True,
+                "open_crafter_panel": True,
+            },
         },
         "active_crafter_assignments": {
             "feasible": False,
-            "blocker": "blocked: no calibrated production list text/row rects and no verified production assignment parser exist",
+            "blocker": (
+                "missing calibrated rects: PRODUCTION_PANEL_TEXT, PRODUCTION_TOP_ANCHOR, "
+                "PRODUCTION_ROW1_READ, PRODUCTION_ROW2_READ, PRODUCTION_ROW1_ACTIVE, PRODUCTION_ROW2_ACTIVE"
+            ),
+            "reader_contract": (
+                "read each visible production row as ProductionAssignmentRowState(name=<canonical output>, active=<bool>, backend=<reader>)"
+            ),
+            "parser_contract": "aggregate only active rows into dict[output_name, active_count]",
+            "parser_helper_available": True,
+            "required_rect_groups": {
+                "panel_text": ["PRODUCTION_PANEL_TEXT"],
+                "top_anchor": ["PRODUCTION_TOP_ANCHOR"],
+                "row_labels": ["PRODUCTION_ROW1_READ", "PRODUCTION_ROW2_READ"],
+                "row_active_indicators": ["PRODUCTION_ROW1_ACTIVE", "PRODUCTION_ROW2_ACTIVE"],
+            },
+            "missing_rects": [
+                "PRODUCTION_PANEL_TEXT",
+                "PRODUCTION_TOP_ANCHOR",
+                "PRODUCTION_ROW1_READ",
+                "PRODUCTION_ROW2_READ",
+                "PRODUCTION_ROW1_ACTIVE",
+                "PRODUCTION_ROW2_ACTIVE",
+            ],
+            "navigation": {
+                "open_smelter_panel": True,
+                "open_crafter_panel": True,
+            },
         },
         "current_bar_inventory": {
             "feasible": True,

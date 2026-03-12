@@ -79,6 +79,8 @@ class ActionConfig:
     ores_tab_key: str = "f1"
     alloys_tab_key: str = "f2"
     items_tab_key: str = "f3"
+    smelt_tab_key: str = "f4"
+    craft_tab_key: str = "f5"
     increase_mining_key: str = "ctrl+1"
     increase_speed_key: str = "ctrl+2"
     increase_cargo_key: str = "ctrl+3"

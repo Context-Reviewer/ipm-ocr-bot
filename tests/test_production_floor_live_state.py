@@ -1,4 +1,6 @@
-from ipm.state import InventoryRowState
+from PIL import Image
+
+from ipm.state import InventoryRowState, ProductionOverviewCardState
 from production_floor_live_state import ProductionFloorLiveStateReader
 
 
@@ -7,6 +9,12 @@ class FakeRects:
         self.rects = {
             "ORES_PANEL_TEXT": (0, 0, 1, 1),
             "ORES_TOP_ANCHOR": (0, 0, 1, 1),
+            "ORE_ROW1_READ": (70, 545, 292, 50),
+            "ORE_ROW2_READ": (70, 605, 292, 45),
+            "PRODUCTION_CARD1": (0, 0, 1, 1),
+            "PRODUCTION_CARD2": (0, 0, 1, 1),
+            "PRODUCTION_CARD3": (0, 0, 1, 1),
+            "PRODUCTION_CARD4": (0, 0, 1, 1),
         }
 
     def get(self, key):
@@ -15,7 +23,7 @@ class FakeRects:
 
 class FakeCapture:
     def capture_client_bbox(self, _bbox):
-        return None
+        return Image.new("RGB", (48, 48), "white")
 
 
 class FakeActions:
@@ -80,12 +88,35 @@ class FakeInventoryReader:
         return self.pages.get((self.actions.current_tab, self.actions.page_index), {})
 
 
+class FakeProductionReader:
+    def read_cards(self, *, tab, open_tab, templates, inventory_counts):
+        if not open_tab():
+            raise ValueError("open_tab_failed")
+        if not templates:
+            raise ValueError("missing_templates")
+        if not inventory_counts:
+            raise ValueError("missing_inventory")
+        if tab == "smelt":
+            return [
+                ProductionOverviewCardState(slot_index=1, tab="smelt", output_name="Lead Bar", active=False, timer_text=None, backend="fake"),
+                ProductionOverviewCardState(slot_index=2, tab="smelt", output_name="Iron Bar", active=True, timer_text="12s", backend="fake"),
+                ProductionOverviewCardState(slot_index=3, tab="smelt", output_name="Copper Bar", active=True, timer_text="3s", backend="fake"),
+                ProductionOverviewCardState(slot_index=4, tab="smelt", output_name="", active=False, timer_text=None, backend="locked"),
+            ]
+        return [
+            ProductionOverviewCardState(slot_index=1, tab="craft", output_name="Copper Wire", active=True, timer_text="21s", backend="fake"),
+            ProductionOverviewCardState(slot_index=2, tab="craft", output_name="Battery", active=True, timer_text="21s", backend="fake"),
+            ProductionOverviewCardState(slot_index=3, tab="craft", output_name="", active=False, timer_text=None, backend="locked"),
+            ProductionOverviewCardState(slot_index=4, tab="craft", output_name="", active=False, timer_text=None, backend="empty"),
+        ]
+
+
 class _TestableProductionFloorLiveStateReader(ProductionFloorLiveStateReader):
     def _scroll_to_top(self) -> None:
         return None
 
 
-def test_production_floor_live_state_reads_bars_and_items_and_reports_assignment_blockers():
+def test_production_floor_live_state_reads_bars_items_and_overview_assignment_queues():
     actions = FakeActions()
     reader = _TestableProductionFloorLiveStateReader(
         config=type("Config", (), {"visible_ore_rows": 2})(),
@@ -93,6 +124,7 @@ def test_production_floor_live_state_reads_bars_and_items_and_reports_assignment
         capture=FakeCapture(),
         actions=actions,
         inventory_reader=FakeInventoryReader(actions),
+        production_reader=FakeProductionReader(),
     )
 
     result = reader.read()
@@ -105,66 +137,56 @@ def test_production_floor_live_state_reads_bars_and_items_and_reports_assignment
     assert result["items"] == {
         "Copper Wire": 9,
     }
+    assert result["smelter_queue"] == {
+        "Copper Bar": 1,
+        "Iron Bar": 1,
+    }
+    assert result["crafter_queue"] == {
+        "Battery": 1,
+        "Copper Wire": 1,
+    }
     assert result["seam_status"] == {
         "active_smelter_assignments": {
-            "feasible": False,
-            "blocker": (
-                "missing calibrated rects: PRODUCTION_PANEL_TEXT, PRODUCTION_TOP_ANCHOR, "
-                "PRODUCTION_ROW1_READ, PRODUCTION_ROW2_READ, PRODUCTION_ROW1_ACTIVE, PRODUCTION_ROW2_ACTIVE"
-            ),
+            "feasible": True,
+            "blocker": "",
             "reader_contract": (
-                "read each visible production row as ProductionAssignmentRowState(name=<canonical output>, active=<bool>, backend=<reader>)"
+                "read four production overview slots as ProductionOverviewCardState(slot_index=<int>, tab=<smelt|craft>, "
+                "output_name=<canonical output>, active=<bool>, timer_text=<optional>, backend=<matcher>)"
             ),
-            "parser_contract": "aggregate only active rows into dict[output_name, active_count]",
-            "parser_helper_available": True,
-            "required_rect_groups": {
-                "panel_text": ["PRODUCTION_PANEL_TEXT"],
-                "top_anchor": ["PRODUCTION_TOP_ANCHOR"],
-                "row_labels": ["PRODUCTION_ROW1_READ", "PRODUCTION_ROW2_READ"],
-                "row_active_indicators": ["PRODUCTION_ROW1_ACTIVE", "PRODUCTION_ROW2_ACTIVE"],
-            },
-            "missing_rects": [
-                "PRODUCTION_PANEL_TEXT",
-                "PRODUCTION_TOP_ANCHOR",
-                "PRODUCTION_ROW1_READ",
-                "PRODUCTION_ROW2_READ",
-                "PRODUCTION_ROW1_ACTIVE",
-                "PRODUCTION_ROW2_ACTIVE",
+            "parser_contract": "aggregate only cards with output_name and active=true into dict[output_name, active_count]",
+            "required_rects": [
+                "PRODUCTION_CARD1",
+                "PRODUCTION_CARD2",
+                "PRODUCTION_CARD3",
+                "PRODUCTION_CARD4",
             ],
-            "navigation": {
-                "open_smelter_panel": True,
-                "open_crafter_panel": True,
-            },
+            "cards_read": [
+                {"slot_index": 1, "tab": "smelt", "output_name": "Lead Bar", "active": False, "timer_text": None, "backend": "fake"},
+                {"slot_index": 2, "tab": "smelt", "output_name": "Iron Bar", "active": True, "timer_text": "12s", "backend": "fake"},
+                {"slot_index": 3, "tab": "smelt", "output_name": "Copper Bar", "active": True, "timer_text": "3s", "backend": "fake"},
+                {"slot_index": 4, "tab": "smelt", "output_name": "", "active": False, "timer_text": None, "backend": "locked"},
+            ],
         },
         "active_crafter_assignments": {
-            "feasible": False,
-            "blocker": (
-                "missing calibrated rects: PRODUCTION_PANEL_TEXT, PRODUCTION_TOP_ANCHOR, "
-                "PRODUCTION_ROW1_READ, PRODUCTION_ROW2_READ, PRODUCTION_ROW1_ACTIVE, PRODUCTION_ROW2_ACTIVE"
-            ),
+            "feasible": True,
+            "blocker": "",
             "reader_contract": (
-                "read each visible production row as ProductionAssignmentRowState(name=<canonical output>, active=<bool>, backend=<reader>)"
+                "read four production overview slots as ProductionOverviewCardState(slot_index=<int>, tab=<smelt|craft>, "
+                "output_name=<canonical output>, active=<bool>, timer_text=<optional>, backend=<matcher>)"
             ),
-            "parser_contract": "aggregate only active rows into dict[output_name, active_count]",
-            "parser_helper_available": True,
-            "required_rect_groups": {
-                "panel_text": ["PRODUCTION_PANEL_TEXT"],
-                "top_anchor": ["PRODUCTION_TOP_ANCHOR"],
-                "row_labels": ["PRODUCTION_ROW1_READ", "PRODUCTION_ROW2_READ"],
-                "row_active_indicators": ["PRODUCTION_ROW1_ACTIVE", "PRODUCTION_ROW2_ACTIVE"],
-            },
-            "missing_rects": [
-                "PRODUCTION_PANEL_TEXT",
-                "PRODUCTION_TOP_ANCHOR",
-                "PRODUCTION_ROW1_READ",
-                "PRODUCTION_ROW2_READ",
-                "PRODUCTION_ROW1_ACTIVE",
-                "PRODUCTION_ROW2_ACTIVE",
+            "parser_contract": "aggregate only cards with output_name and active=true into dict[output_name, active_count]",
+            "required_rects": [
+                "PRODUCTION_CARD1",
+                "PRODUCTION_CARD2",
+                "PRODUCTION_CARD3",
+                "PRODUCTION_CARD4",
             ],
-            "navigation": {
-                "open_smelter_panel": True,
-                "open_crafter_panel": True,
-            },
+            "cards_read": [
+                {"slot_index": 1, "tab": "craft", "output_name": "Copper Wire", "active": True, "timer_text": "21s", "backend": "fake"},
+                {"slot_index": 2, "tab": "craft", "output_name": "Battery", "active": True, "timer_text": "21s", "backend": "fake"},
+                {"slot_index": 3, "tab": "craft", "output_name": "", "active": False, "timer_text": None, "backend": "locked"},
+                {"slot_index": 4, "tab": "craft", "output_name": "", "active": False, "timer_text": None, "backend": "empty"},
+            ],
         },
         "current_bar_inventory": {
             "feasible": True,

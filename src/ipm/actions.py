@@ -17,6 +17,7 @@ INPUT_MOUSE = 0
 MOUSEEVENTF_MOVE = 0x0001
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
+MOUSEEVENTF_WHEEL = 0x0800
 MOUSEEVENTF_ABSOLUTE = 0x8000
 SM_CXSCREEN = 0
 SM_CYSCREEN = 1
@@ -146,6 +147,16 @@ class ActionDriver:
             bright_threshold=185,
         )
 
+    def _resources_tab_active(self, rect_key: str) -> bool:
+        if not self._resources_panel_visible():
+            return False
+        return self._rect_has_signal(
+            rect_key,
+            min_dynamic_range=160,
+            min_bright_fraction=0.12,
+            bright_threshold=185,
+        )
+
     def _wait_for_state(self, checker, *, attempts: int = 3, delay: float | None = None) -> bool:
         settle_delay = float(delay if delay is not None else self.config.actions.menu_delay_seconds)
         for attempt_index in range(max(1, int(attempts))):
@@ -166,7 +177,7 @@ class ActionDriver:
         return abs_x, abs_y
 
     @classmethod
-    def _send_mouse_input(cls, *, x: int, y: int, flags: int) -> None:
+    def _send_mouse_input(cls, *, x: int, y: int, flags: int, mouse_data: int = 0) -> None:
         abs_x, abs_y = cls._screen_to_absolute_units(x, y)
         user32 = ctypes.windll.user32
         event = INPUT(
@@ -174,13 +185,41 @@ class ActionDriver:
             mi=MOUSEINPUT(
                 dx=abs_x,
                 dy=abs_y,
-                mouseData=0,
+                mouseData=int(mouse_data) & 0xFFFFFFFF,
                 dwFlags=int(flags) | MOUSEEVENTF_ABSOLUTE,
                 time=0,
                 dwExtraInfo=None,
             ),
         )
         user32.SendInput(1, ctypes.byref(event), ctypes.sizeof(event))
+
+    def _open_resources_panel(self) -> bool:
+        if self._wait_for_state(self._resources_panel_visible, attempts=1):
+            return True
+        if self.click_rect_center("RESOURCES", delay=self.config.actions.menu_delay_seconds):
+            if self._wait_for_state(self._resources_panel_visible):
+                return True
+        if self.send_key(self.config.actions.open_resources_key, delay=self.config.actions.menu_delay_seconds):
+            if self._wait_for_state(self._resources_panel_visible):
+                return True
+        return False
+
+    def _close_navigation_panel(
+        self,
+        *,
+        rect_key: str,
+        visible_checker,
+        fallback_key: str,
+    ) -> bool:
+        if not self._wait_for_state(visible_checker, attempts=1):
+            return True
+        if self.click_rect_center(rect_key, delay=self.config.actions.menu_delay_seconds):
+            if self._wait_for_state(lambda: not visible_checker()):
+                return True
+        if self.send_key(fallback_key, delay=self.config.actions.menu_delay_seconds):
+            if self._wait_for_state(lambda: not visible_checker()):
+                return True
+        return False
 
     def _open_production_panel(self) -> bool:
         if self._wait_for_state(self._production_panel_visible, attempts=1):
@@ -224,10 +263,16 @@ class ActionDriver:
         return True
 
     def reset_ui(self) -> None:
-        self.send_key(self.config.actions.open_resources_key, delay=self.config.actions.menu_delay_seconds)
-        self.send_key(self.config.actions.open_resources_key, delay=self.config.actions.menu_delay_seconds)
-        self.send_key(self.config.actions.open_production_key, delay=self.config.actions.menu_delay_seconds)
-        self.send_key(self.config.actions.open_production_key, delay=self.config.actions.menu_delay_seconds)
+        self._close_navigation_panel(
+            rect_key="RESOURCES",
+            visible_checker=self._resources_panel_visible,
+            fallback_key=self.config.actions.open_resources_key,
+        )
+        self._close_navigation_panel(
+            rect_key="PRODUCTION",
+            visible_checker=self._production_panel_visible,
+            fallback_key=self.config.actions.open_production_key,
+        )
 
     def open_planet_menu(self) -> bool:
         return self.send_key(self.config.actions.open_planet_menu_key, delay=self.config.actions.menu_delay_seconds)
@@ -240,19 +285,43 @@ class ActionDriver:
         return ok
 
     def open_ores_panel(self) -> bool:
-        ok = self.send_key(self.config.actions.open_resources_key, delay=self.config.actions.menu_delay_seconds)
-        ok = self.send_key(self.config.actions.ores_tab_key, delay=self.config.actions.menu_delay_seconds) and ok
-        return ok
+        if not self._open_resources_panel():
+            return False
+        if self._wait_for_state(lambda: self._resources_tab_active("RESOURCES_ORES_TAB"), attempts=1):
+            return True
+        if self.click_rect_center("RESOURCES_ORES_TAB", delay=self.config.actions.menu_delay_seconds):
+            if self._wait_for_state(lambda: self._resources_tab_active("RESOURCES_ORES_TAB")):
+                return True
+        if self.send_key(self.config.actions.ores_tab_key, delay=self.config.actions.menu_delay_seconds):
+            if self._wait_for_state(lambda: self._resources_tab_active("RESOURCES_ORES_TAB")):
+                return True
+        return False
 
     def open_alloys_panel(self) -> bool:
-        ok = self.send_key(self.config.actions.open_resources_key, delay=self.config.actions.menu_delay_seconds)
-        ok = self.send_key(self.config.actions.alloys_tab_key, delay=self.config.actions.menu_delay_seconds) and ok
-        return ok
+        if not self._open_resources_panel():
+            return False
+        if self._wait_for_state(lambda: self._resources_tab_active("RESOURCES_ALLOYS_TAB"), attempts=1):
+            return True
+        if self.click_rect_center("RESOURCES_ALLOYS_TAB", delay=self.config.actions.menu_delay_seconds):
+            if self._wait_for_state(lambda: self._resources_tab_active("RESOURCES_ALLOYS_TAB")):
+                return True
+        if self.send_key(self.config.actions.alloys_tab_key, delay=self.config.actions.menu_delay_seconds):
+            if self._wait_for_state(lambda: self._resources_tab_active("RESOURCES_ALLOYS_TAB")):
+                return True
+        return False
 
     def open_items_panel(self) -> bool:
-        ok = self.send_key(self.config.actions.open_resources_key, delay=self.config.actions.menu_delay_seconds)
-        ok = self.send_key(self.config.actions.items_tab_key, delay=self.config.actions.menu_delay_seconds) and ok
-        return ok
+        if not self._open_resources_panel():
+            return False
+        if self._wait_for_state(lambda: self._resources_tab_active("RESOURCES_ITEMS_TAB"), attempts=1):
+            return True
+        if self.click_rect_center("RESOURCES_ITEMS_TAB", delay=self.config.actions.menu_delay_seconds):
+            if self._wait_for_state(lambda: self._resources_tab_active("RESOURCES_ITEMS_TAB")):
+                return True
+        if self.send_key(self.config.actions.items_tab_key, delay=self.config.actions.menu_delay_seconds):
+            if self._wait_for_state(lambda: self._resources_tab_active("RESOURCES_ITEMS_TAB")):
+                return True
+        return False
 
     def open_smelter_panel(self) -> bool:
         if not self._open_production_panel():
@@ -341,6 +410,26 @@ class ActionDriver:
 
     def click_client_point(self, point: tuple[int, int], *, delay: float | None = None) -> bool:
         return self._click_client_point(point, delay=delay)
+
+    def scroll_client_wheel(self, point: tuple[int, int], delta: int, *, delay: float | None = None) -> bool:
+        if not ensure_focus(self.config.focus):
+            return False
+        client = get_bluestacks_client_rect(self.config.capture.window_title)
+        if client is None:
+            return False
+        abs_x = int(client.left + point[0])
+        abs_y = int(client.top + point[1])
+        self._send_mouse_input(x=abs_x, y=abs_y, flags=MOUSEEVENTF_MOVE)
+        time.sleep(0.03)
+        self._send_mouse_input(
+            x=abs_x,
+            y=abs_y,
+            flags=MOUSEEVENTF_MOVE | MOUSEEVENTF_WHEEL,
+            mouse_data=int(delta),
+        )
+        time.sleep(float(delay if delay is not None else self.config.actions.scroll_delay_seconds))
+        self._invalidate_capture()
+        return True
 
     def click_rect_center(self, rect_key: str, *, delay: float | None = None) -> bool:
         if self.rects is None:

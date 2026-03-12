@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from math import ceil
 from typing import Any, Callable
 
@@ -10,7 +10,13 @@ import bars_data
 import items_data
 from ipm.domain_data import RESOURCE_ROW_NAMES, normalize_resource_row_name
 from ipm.readers.inventory_panel import InventoryPanelReader
-from production_assignment_seams import inspect_production_assignment_seams
+from ipm.readers.production_overview import ProductionOverviewReader
+from production_overview_seams import (
+    allowed_overview_outputs,
+    parse_active_overview_cards,
+    required_production_overview_rects,
+    seam_contract_summary,
+)
 
 
 def _alloy_inventory_names() -> list[str]:
@@ -67,6 +73,8 @@ class ProductionFloorLiveStateReader:
     capture: object
     actions: object
     inventory_reader: InventoryPanelReader
+    perception: object | None = None
+    production_reader: ProductionOverviewReader | None = None
 
     def _capture_anchor(self):
         rect = self.rects.get("ORES_TOP_ANCHOR")
@@ -107,7 +115,8 @@ class ProductionFloorLiveStateReader:
         open_tab: Callable[[], bool],
         known_names: list[str],
         aliases: dict[str, str] | None = None,
-    ) -> dict[str, int]:
+        template_row_names: list[str] | None = None,
+    ) -> tuple[dict[str, int], dict[str, object]]:
         if self.rects.get("ORES_PANEL_TEXT") is None:
             raise ValueError("missing_rect:ORES_PANEL_TEXT")
         if not open_tab():
@@ -116,10 +125,33 @@ class ProductionFloorLiveStateReader:
         visible_rows = max(1, int(getattr(self.config, "visible_ore_rows", 1) or 1))
         max_pages = max(1, int(ceil(len(known_names) / visible_rows)) + 2)
         merged: dict[str, int] = {}
+        templates: dict[str, object] = {}
         seen_pages: set[tuple[tuple[str, int], ...]] = set()
         stagnant_pages = 0
         for page_index in range(max_pages):
             rows = self.inventory_reader.read_visible_rows(known_names=known_names, aliases=aliases)
+            for row_index, row in rows.items():
+                row_name = str(getattr(row, "name", "") or "").strip()
+                if not row_name or row_name in templates:
+                    continue
+                read_rect = self.rects.get(f"ORE_ROW{int(row_index)}_READ")
+                if read_rect is None:
+                    continue
+                icon_rect = (int(read_rect[0]) - 62, int(read_rect[1]) + 10, 47, 47)
+                icon_image = self.capture.capture_client_bbox(icon_rect)
+                if icon_image is not None:
+                    templates[row_name] = icon_image
+            if page_index == 0:
+                for row_index, template_name in enumerate(template_row_names or [], start=1):
+                    if template_name in templates:
+                        continue
+                    read_rect = self.rects.get(f"ORE_ROW{int(row_index)}_READ")
+                    if read_rect is None:
+                        continue
+                    icon_rect = (int(read_rect[0]) - 62, int(read_rect[1]) + 10, 47, 47)
+                    icon_image = self.capture.capture_client_bbox(icon_rect)
+                    if icon_image is not None:
+                        templates[str(template_name)] = icon_image
             fingerprint = tuple(
                 (str(row.name), int(row.quantity))
                 for row in rows.values()
@@ -142,18 +174,42 @@ class ProductionFloorLiveStateReader:
                 raise ValueError("scroll_down_failed")
         if not merged:
             raise ValueError(f"empty_inventory:{tab_name}")
-        return merged
+        return merged, templates
+
+    def _overview_seam_blocker(self, *, kind: str, blocker: str) -> dict[str, Any]:
+        return {
+            "feasible": False,
+            "blocker": str(blocker),
+            **seam_contract_summary(),
+        }
+
+    def _overview_seam_ok(self) -> dict[str, Any]:
+        return {
+            "feasible": True,
+            "blocker": "",
+            **seam_contract_summary(),
+        }
 
     def read(self) -> dict[str, Any]:
         alloy_names = _alloy_inventory_names()
-        assignment_seams = inspect_production_assignment_seams(
-            rects=self.rects,
-            actions=self.actions,
-            visible_rows=max(1, int(getattr(self.config, "visible_ore_rows", 1) or 1)),
-        )
+        overview_rects = required_production_overview_rects()
+        production_reader = self.production_reader
+        if production_reader is None and self.perception is not None:
+            production_reader = ProductionOverviewReader(
+                rects=self.rects,
+                capture=self.capture,
+                actions=self.actions,
+                perception=self.perception,
+            )
         seam_status = {
-            "active_smelter_assignments": assignment_seams["smelter"],
-            "active_crafter_assignments": assignment_seams["crafter"],
+            "active_smelter_assignments": self._overview_seam_blocker(
+                kind="smelt",
+                blocker="production overview reader unavailable",
+            ),
+            "active_crafter_assignments": self._overview_seam_blocker(
+                kind="craft",
+                blocker="production overview reader unavailable",
+            ),
             "current_bar_inventory": {
                 "feasible": True,
                 "blocker": "",
@@ -163,21 +219,73 @@ class ProductionFloorLiveStateReader:
                 "blocker": "",
             },
         }
+        missing_overview_rects = [rect_key for rect_key in overview_rects if self.rects.get(rect_key) is None]
+        if missing_overview_rects:
+            blocker = "missing calibrated rects: " + ", ".join(missing_overview_rects)
+            seam_status["active_smelter_assignments"] = self._overview_seam_blocker(kind="smelt", blocker=blocker)
+            seam_status["active_crafter_assignments"] = self._overview_seam_blocker(kind="craft", blocker=blocker)
         try:
-            bars = self._read_inventory_tab(
+            bars, bar_templates = self._read_inventory_tab(
                 tab_name="bars",
                 open_tab=self.actions.open_alloys_panel,
                 known_names=alloy_names,
                 aliases=_inventory_aliases(alloy_names),
+                template_row_names=list(bars_data.list_bars())[:5],
             )
-            items = self._read_inventory_tab(
+            items, item_templates = self._read_inventory_tab(
                 tab_name="items",
                 open_tab=self.actions.open_items_panel,
                 known_names=list(items_data.list_items()),
+                template_row_names=list(items_data.list_items())[:4],
             )
+            smelter_queue: dict[str, int] = {}
+            crafter_queue: dict[str, int] = {}
+            if production_reader is not None and not missing_overview_rects:
+                try:
+                    smelter_cards = production_reader.read_cards(
+                        tab="smelt",
+                        open_tab=self.actions.open_smelter_panel,
+                        templates={name: image for name, image in bar_templates.items() if name in allowed_overview_outputs("smelt")},
+                        inventory_counts=bars,
+                    )
+                    smelter_queue = parse_active_overview_cards(
+                        smelter_cards,
+                        allowed_outputs=allowed_overview_outputs("smelt"),
+                    )
+                    seam_status["active_smelter_assignments"] = {
+                        **self._overview_seam_ok(),
+                        "cards_read": [asdict(card) for card in smelter_cards],
+                    }
+                except Exception as exc:
+                    seam_status["active_smelter_assignments"] = self._overview_seam_blocker(
+                        kind="smelt",
+                        blocker=str(exc),
+                    )
+                try:
+                    crafter_cards = production_reader.read_cards(
+                        tab="craft",
+                        open_tab=self.actions.open_crafter_panel,
+                        templates={name: image for name, image in item_templates.items() if name in allowed_overview_outputs("craft")},
+                        inventory_counts=items,
+                    )
+                    crafter_queue = parse_active_overview_cards(
+                        crafter_cards,
+                        allowed_outputs=allowed_overview_outputs("craft"),
+                    )
+                    seam_status["active_crafter_assignments"] = {
+                        **self._overview_seam_ok(),
+                        "cards_read": [asdict(card) for card in crafter_cards],
+                    }
+                except Exception as exc:
+                    seam_status["active_crafter_assignments"] = self._overview_seam_blocker(
+                        kind="craft",
+                        blocker=str(exc),
+                    )
             return {
                 "bars": bars,
                 "items": items,
+                "smelter_queue": smelter_queue,
+                "crafter_queue": crafter_queue,
                 "seam_status": seam_status,
             }
         finally:

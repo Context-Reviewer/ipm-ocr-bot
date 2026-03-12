@@ -33,6 +33,16 @@ class InventoryRowState:
 
 
 @dataclass(slots=True)
+class ProductionOverviewCardState:
+    slot_index: int = 0
+    tab: str = ""
+    output_name: str = ""
+    active: bool = False
+    timer_text: str | None = None
+    backend: str = ""
+
+
+@dataclass(slots=True)
 class SellDialogState:
     selected_quantity: Optional[int] = None
     slider_visible: bool = False

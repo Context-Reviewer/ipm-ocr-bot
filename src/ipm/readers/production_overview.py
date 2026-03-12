@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import re
 
 import cv2
 import numpy as np
-from PIL import Image, ImageChops, ImageStat
+from PIL import Image, ImageChops, ImageDraw, ImageStat
 
 import bars_data
 import items_data
@@ -29,11 +30,10 @@ _ACTIVE_FILL_CONFIDENT_MIN = 0.05
 _PRODUCTION_TOP_SCROLL_MAX_ATTEMPTS = 3
 _RECIPE_BUTTON_REL_X = 0.375
 _RECIPE_BUTTON_REL_Y = 0.807
-_TOOLTIP_PROBE_POINT_FRACTIONS = (
-    (0.30, 0.35),
-    (0.60, 0.35),
-    (0.30, 0.65),
-    (0.60, 0.65),
+_TOOLTIP_PROBE_POINTS = (
+    ("center", (0.50, 0.50)),
+    ("upper_left", (0.34, 0.34)),
+    ("lower_right", (0.66, 0.66)),
 )
 _SMELT_RECIPE_SCROLL_DELTA = -120
 _SMELT_RECIPE_SLOT_LAYOUT_PAGE0 = (
@@ -63,6 +63,12 @@ class _SmeltRecipePopupEntry:
 class _TooltipIconRegion:
     kind: str
     box: tuple[int, int, int, int]
+
+
+@dataclass(slots=True, frozen=True)
+class _TooltipProbePoint:
+    point_id: str
+    point: tuple[int, int]
 
 
 @dataclass(slots=True)
@@ -323,15 +329,22 @@ class ProductionOverviewReader:
 
     @staticmethod
     def _tooltip_probe_points(icon_box: tuple[int, int, int, int]) -> tuple[tuple[int, int], ...]:
+        return tuple(spec.point for spec in ProductionOverviewReader._tooltip_probe_point_specs(icon_box))
+
+    @staticmethod
+    def _tooltip_probe_point_specs(icon_box: tuple[int, int, int, int]) -> tuple[_TooltipProbePoint, ...]:
         x1, y1, x2, y2 = icon_box
         width = max(1, x2 - x1)
         height = max(1, y2 - y1)
         return tuple(
-            (
-                int(x1 + round(width * x_fraction)),
-                int(y1 + round(height * y_fraction)),
+            _TooltipProbePoint(
+                point_id=point_id,
+                point=(
+                    int(x1 + round(width * x_fraction)),
+                    int(y1 + round(height * y_fraction)),
+                ),
             )
-            for x_fraction, y_fraction in _TOOLTIP_PROBE_POINT_FRACTIONS
+            for point_id, (x_fraction, y_fraction) in _TOOLTIP_PROBE_POINTS
         )
 
     @staticmethod
@@ -440,7 +453,8 @@ class ProductionOverviewReader:
         card_x, card_y, card_w, card_h = rect
         for region in self._tooltip_icon_regions(tab=tab, card_size=(card_w, card_h)):
             crop_box = self._tooltip_crop_box(region.box, card_size=(card_w, card_h))
-            for point in self._tooltip_probe_points(region.box):
+            for probe in self._tooltip_probe_point_specs(region.box):
+                point = probe.point
                 global_point = (int(card_x + point[0]), int(card_y + point[1]))
                 if not self.actions.click_client_point(global_point, delay=self._scroll_delay_seconds()):
                     raise ValueError("tooltip_probe_click_failed")
@@ -465,6 +479,118 @@ class ProductionOverviewReader:
                 if output_name is not None:
                     return output_name, f"tooltip_probe_{region.kind}_{getattr(result, 'backend', '') or 'generic'}"
         raise ValueError("tooltip_probe_no_valid_label")
+
+    @staticmethod
+    def _tooltip_probe_artifact_label(*, tab: str, rect_key: str, icon_kind: str, point_id: str) -> str:
+        return f"{tab}_{rect_key}_{icon_kind}_{point_id}"
+
+    @staticmethod
+    def _draw_crosshair(draw: ImageDraw.ImageDraw, point: tuple[int, int], *, color: str) -> None:
+        x, y = point
+        draw.line((x - 8, y, x + 8, y), fill=color, width=2)
+        draw.line((x, y - 8, x, y + 8), fill=color, width=2)
+
+    @classmethod
+    def _render_tooltip_probe_audit_overlay(
+        cls,
+        *,
+        frame: Image.Image,
+        card_rect: tuple[int, int, int, int],
+        icon_box: tuple[int, int, int, int],
+        probe_point: tuple[int, int],
+        tooltip_crop_box: tuple[int, int, int, int],
+        label: str,
+    ) -> Image.Image:
+        annotated = frame.convert("RGB").copy()
+        draw = ImageDraw.Draw(annotated)
+        card_x, card_y, card_w, card_h = card_rect
+        card_box = (card_x, card_y, card_x + card_w, card_y + card_h)
+        icon_rect = (
+            card_x + icon_box[0],
+            card_y + icon_box[1],
+            card_x + icon_box[2],
+            card_y + icon_box[3],
+        )
+        crop_rect = (
+            card_x + tooltip_crop_box[0],
+            card_y + tooltip_crop_box[1],
+            card_x + tooltip_crop_box[2],
+            card_y + tooltip_crop_box[3],
+        )
+        draw.rectangle(card_box, outline="#00e5ff", width=3)
+        draw.rectangle(icon_rect, outline="#ffd400", width=3)
+        draw.rectangle(crop_rect, outline="#00ff66", width=2)
+        cls._draw_crosshair(draw, (card_x + probe_point[0], card_y + probe_point[1]), color="#ff3b30")
+        text_origin = (max(4, card_x), max(4, card_y - 18))
+        draw.rectangle((text_origin[0] - 2, text_origin[1] - 2, text_origin[0] + (len(label) * 7), text_origin[1] + 14), fill="#08121f")
+        draw.text(text_origin, label, fill="#ffffff")
+        return annotated
+
+    def audit_tooltip_probe_geometry(
+        self,
+        *,
+        rect_key: str,
+        tab: str,
+        output_dir: str | Path,
+    ) -> list[dict[str, str | tuple[int, int] | tuple[int, int, int, int] | bool | None]]:
+        rect = getattr(self.rects, "get", lambda _key: None)(rect_key)
+        if rect is None:
+            raise ValueError(f"missing_rect:{rect_key}")
+        card_x, card_y, card_w, card_h = rect
+        output_root = Path(output_dir)
+        output_root.mkdir(parents=True, exist_ok=True)
+        attempts: list[dict[str, str | tuple[int, int] | tuple[int, int, int, int] | bool | None]] = []
+        for region in self._tooltip_icon_regions(tab=tab, card_size=(card_w, card_h)):
+            crop_box = self._tooltip_crop_box(region.box, card_size=(card_w, card_h))
+            for probe in self._tooltip_probe_point_specs(region.box):
+                global_point = (int(card_x + probe.point[0]), int(card_y + probe.point[1]))
+                click_ok = bool(self.actions.click_client_point(global_point, delay=self._scroll_delay_seconds()))
+                frame = self._capture_screen()
+                if frame is None:
+                    raise ValueError("tooltip_probe_capture_unavailable")
+                label = self._tooltip_probe_artifact_label(
+                    tab=tab,
+                    rect_key=rect_key,
+                    icon_kind=region.kind,
+                    point_id=probe.point_id,
+                )
+                overlay = self._render_tooltip_probe_audit_overlay(
+                    frame=frame,
+                    card_rect=rect,
+                    icon_box=region.box,
+                    probe_point=probe.point,
+                    tooltip_crop_box=crop_box,
+                    label=label,
+                )
+                overlay_path = output_root / f"{label}_overlay.png"
+                tooltip_path = output_root / f"{label}_tooltip.png"
+                overlay.save(overlay_path)
+                tooltip = frame.crop(
+                    (
+                        int(card_x + crop_box[0]),
+                        int(card_y + crop_box[1]),
+                        int(card_x + crop_box[2]),
+                        int(card_y + crop_box[3]),
+                    )
+                )
+                tooltip.save(tooltip_path)
+                attempts.append(
+                    {
+                        "label": label,
+                        "tab": tab,
+                        "rect_key": rect_key,
+                        "icon_kind": region.kind,
+                        "point_id": probe.point_id,
+                        "probe_point": probe.point,
+                        "global_point": global_point,
+                        "icon_box": region.box,
+                        "tooltip_crop_box": crop_box,
+                        "click_ok": click_ok,
+                        "overlay_artifact": str(overlay_path),
+                        "tooltip_artifact": str(tooltip_path),
+                    }
+                )
+        return attempts
 
     @staticmethod
     def _input_search_boxes(card: Image.Image, *, tab: str) -> list[tuple[int, int, int, int]]:

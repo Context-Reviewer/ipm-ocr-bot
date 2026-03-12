@@ -1,3 +1,4 @@
+from pathlib import Path
 from PIL import Image
 import pytest
 
@@ -563,7 +564,17 @@ def test_production_overview_reader_closes_smelt_recipe_popup_by_visual_diff():
 def test_production_overview_reader_generates_deterministic_tooltip_probe_points():
     points = ProductionOverviewReader._tooltip_probe_points((10, 20, 40, 60))
 
-    assert points == ((19, 34), (28, 34), (19, 46), (28, 46))
+    assert points == ((25, 40), (20, 34), (30, 46))
+
+
+def test_production_overview_reader_generates_named_tooltip_probe_points():
+    points = ProductionOverviewReader._tooltip_probe_point_specs((10, 20, 40, 60))
+
+    assert [(point.point_id, point.point) for point in points] == [
+        ("center", (25, 40)),
+        ("upper_left", (20, 34)),
+        ("lower_right", (30, 46)),
+    ]
 
 
 def test_production_overview_reader_computes_local_tooltip_crop_box():
@@ -649,6 +660,30 @@ def test_production_overview_reader_fails_closed_without_screen_capture():
             tab="smelt",
             templates={"Lead Bar": Image.new("RGB", (10, 10), "gray")},
         )
+
+
+def test_production_overview_reader_writes_tooltip_probe_audit_artifacts(tmp_path):
+    card = Image.new("RGB", (240, 295), "#112244")
+    frame = Image.new("RGB", (600, 1000), "#223355")
+    reader = ProductionOverviewReader(
+        rects=_FakeRects(),
+        capture=_FakeCapture([card], screen_frames=[frame] * 6),
+        actions=_FakeActions(),
+        perception=_FakePerception(),
+    )
+
+    attempts = reader.audit_tooltip_probe_geometry(
+        rect_key="PRODUCTION_CARD1",
+        tab="smelt",
+        output_dir=tmp_path,
+    )
+
+    assert len(attempts) == 6
+    assert attempts[0]["label"] == "smelt_PRODUCTION_CARD1_bar_center"
+    assert attempts[0]["icon_box"] == (120, 71, 182, 136)
+    assert attempts[0]["tooltip_crop_box"] == (42, 35, 198, 85)
+    assert Path(str(attempts[0]["overlay_artifact"])).exists()
+    assert Path(str(attempts[0]["tooltip_artifact"])).exists()
 
 
 def test_production_overview_reader_tries_tooltip_probe_before_recipe_popup(monkeypatch):

@@ -11,8 +11,12 @@ import tempfile
 from typing import Any, Protocol
 
 import numpy as np
-import pytesseract
 from PIL import Image
+
+try:
+    import pytesseract
+except Exception:
+    pytesseract = None
 
 from .domain_data import (
     ORE_NAMES,
@@ -406,6 +410,8 @@ class LegacyPerceptionBackend:
         return self._rapidocr
 
     def _tesseract_text(self, image: Image.Image, *, mode: str) -> str:
+        if pytesseract is None:
+            return ""
         psm = 7
         whitelist = ""
         if mode == "numeric":

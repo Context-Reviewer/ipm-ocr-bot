@@ -93,9 +93,25 @@ class ActionDriver:
         ok = self.send_key(self.config.actions.ores_tab_key, delay=self.config.actions.menu_delay_seconds) and ok
         return ok
 
+    def open_alloys_panel(self) -> bool:
+        ok = self.send_key(self.config.actions.open_resources_key, delay=self.config.actions.menu_delay_seconds)
+        ok = self.send_key(self.config.actions.alloys_tab_key, delay=self.config.actions.menu_delay_seconds) and ok
+        return ok
+
+    def open_items_panel(self) -> bool:
+        ok = self.send_key(self.config.actions.open_resources_key, delay=self.config.actions.menu_delay_seconds)
+        ok = self.send_key(self.config.actions.items_tab_key, delay=self.config.actions.menu_delay_seconds) and ok
+        return ok
+
     def close_ores_panel(self) -> None:
         # The ores task always opens the Resources panel first, so one toggle closes it.
         self.send_key(self.config.actions.open_resources_key, delay=self.config.actions.menu_delay_seconds)
+
+    def scroll_resource_list_down(self) -> bool:
+        return self.send_key(self.config.actions.scroll_down_key, delay=self.config.actions.scroll_delay_seconds)
+
+    def scroll_resource_list_up(self) -> bool:
+        return self.send_key(self.config.actions.scroll_up_key, delay=self.config.actions.scroll_delay_seconds)
 
     def increase_planet_stat(self, stat: str) -> bool:
         key = {

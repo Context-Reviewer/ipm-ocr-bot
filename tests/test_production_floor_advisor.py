@@ -83,3 +83,19 @@ def test_production_floor_advisor_reports_missing_recipe_materials_for_unmodeled
     }
     assert advice["materials_that_must_not_be_sold"] == ["Inerton Alloy", "Quadium Alloy"]
     assert advice["limitations"]["missing_recipe_materials"] == ["Inerton Alloy", "Quadium Alloy"]
+
+
+def test_production_floor_advisor_reports_live_bar_and_item_reader_support():
+    advice = compute_production_floor_advice_from_mapping({"items": {"Hammer": 0}})
+
+    assert advice["live_reader_support"] == {
+        "active_assignments": False,
+        "ores": True,
+        "bars": True,
+        "items": True,
+    }
+    assert advice["limitations"]["current_inventory_live_readers"] == {
+        "ores": True,
+        "bars": True,
+        "items": True,
+    }

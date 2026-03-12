@@ -48,6 +48,11 @@ class PerceptionConfig:
         "Read all visible text from this resources ores panel crop in top-to-bottom order. "
         "Keep line breaks where possible."
     )
+    prompt_resource_name: str = "Read only the resource or item name visible in this row."
+    prompt_resource_panel: str = (
+        "Read all visible text from this resources panel crop in top-to-bottom order. "
+        "Keep line breaks where possible."
+    )
     prompt_ore_quantity: str = "Read only the ore quantity visible in this row. Keep suffixes like K or M if present."
 
 
@@ -72,9 +77,13 @@ class ActionConfig:
     open_resources_key: str = "shift+1"
     open_production_key: str = "shift+2"
     ores_tab_key: str = "f1"
+    alloys_tab_key: str = "f2"
+    items_tab_key: str = "f3"
     increase_mining_key: str = "ctrl+1"
     increase_speed_key: str = "ctrl+2"
     increase_cargo_key: str = "ctrl+3"
+    scroll_down_key: str = "num2"
+    scroll_up_key: str = "num8"
     sell_open_key: str = "num5"
     sell_confirm_key: str = "\\"
     ore_select_keys: Dict[int, str] = field(

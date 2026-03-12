@@ -330,8 +330,8 @@ def compute_production_floor_advice(state: StateSnapshot) -> dict[str, Any]:
         "live_reader_support": {
             "active_assignments": False,
             "ores": True,
-            "bars": False,
-            "items": False,
+            "bars": True,
+            "items": True,
         },
         "active_production_assignments_detected": active_assignments,
         "expanded_dependency_trees": dependency_trees,
@@ -346,8 +346,8 @@ def compute_production_floor_advice(state: StateSnapshot) -> dict[str, Any]:
             "active_assignment_reader_available": False,
             "current_inventory_live_readers": {
                 "ores": True,
-                "bars": False,
-                "items": False,
+                "bars": True,
+                "items": True,
             },
             "missing_recipe_materials": sorted(missing_recipe_materials),
         },

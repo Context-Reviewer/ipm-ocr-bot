@@ -26,6 +26,13 @@ class OreRowState:
 
 
 @dataclass(slots=True)
+class InventoryRowState:
+    name: str = ""
+    quantity: Optional[int] = None
+    backend: str = ""
+
+
+@dataclass(slots=True)
 class SellDialogState:
     selected_quantity: Optional[int] = None
     slider_visible: bool = False

@@ -10,7 +10,10 @@ sys.path.insert(0, str(REPO_ROOT))
 SRC_ROOT = REPO_ROOT / "src"
 sys.path.insert(0, str(SRC_ROOT))
 
+from ipm.app import build_application
+from ipm.readers.inventory_panel import InventoryPanelReader
 from production_floor_advisor import compute_production_floor_advice_from_mapping
+from production_floor_live_state import ProductionFloorLiveStateReader
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -26,14 +29,56 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--output-json",
         help="Optional output path. Defaults to stdout only.",
     )
+    parser.add_argument(
+        "--overlay-live-bars-items",
+        action="store_true",
+        help="Override bars/items inventory in the provided state JSON using the live Resources panel.",
+    )
     return parser.parse_args(argv)
+
+
+def _overlay_live_bars_items(payload: dict) -> tuple[dict, dict]:
+    app = build_application()
+    live_reader = ProductionFloorLiveStateReader(
+        config=app.config,
+        rects=app.rects,
+        capture=app.capture_backend,
+        actions=app.actions,
+        inventory_reader=InventoryPanelReader(app.config, app.rects, app.capture_backend, app.perception_backend),
+    )
+    live_state = live_reader.read()
+    merged = dict(payload)
+    merged["bars"] = dict(live_state.get("bars") or {})
+    merged["items"] = dict(live_state.get("items") or {})
+    return merged, live_state
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     state_path = Path(str(args.state_json))
     payload = json.loads(state_path.read_text(encoding="utf-8"))
+    live_state = None
+    if bool(args.overlay_live_bars_items):
+        payload, live_state = _overlay_live_bars_items(payload)
     advice = compute_production_floor_advice_from_mapping(payload)
+    if live_state is not None:
+        advice["input_mode"] = {
+            "active_assignments": "manual_state_snapshot",
+            "inventory": "manual_state_snapshot_plus_live_resources_panel_overlay",
+        }
+        advice["live_reader_support"] = {
+            "active_assignments": False,
+            "ores": True,
+            "bars": True,
+            "items": True,
+        }
+        advice["limitations"]["active_assignment_reader_available"] = False
+        advice["limitations"]["current_inventory_live_readers"] = {
+            "ores": True,
+            "bars": True,
+            "items": True,
+        }
+        advice["live_seam_status"] = live_state.get("seam_status")
     rendered = json.dumps(advice, indent=2)
     if args.output_json:
         output_path = Path(str(args.output_json))

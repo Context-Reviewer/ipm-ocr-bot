@@ -173,6 +173,18 @@
     90,
     44
   ],
+  "SMELT_RECIPES_CLOSE": [
+    165,
+    675,
+    80,
+    80
+  ],
+  "SMELT_RECIPES_PANEL": [
+    35,
+    110,
+    350,
+    580
+  ],
   "PLANET_STATS_PANEL": [
     105,
     700,

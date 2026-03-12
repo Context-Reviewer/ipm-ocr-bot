@@ -9,6 +9,7 @@ from PIL import Image, ImageChops, ImageStat
 
 import bars_data
 import items_data
+from .. import perception as perception_backend
 from ..domain_data import normalize_resource_row_name
 from ..state import ProductionOverviewCardState
 from .common import parse_compact_number
@@ -17,10 +18,27 @@ _TIMER_TEXT_RE = re.compile(r"[0-9].*[SMH]|[0-9]+:[0-9]+", re.IGNORECASE)
 _TIMER_PROMPT = "Read only the visible timer text or OFF. Return only the timer text."
 _COUNT_PROMPT = "Read only the visible output quantity. Keep suffixes like K or M if present."
 _INPUT_COUNT_PROMPT = "Read only the visible left input quantity text like 404/1.00K. Return only that quantity text."
+_SMELT_RECIPE_PANEL_PROMPT = "Read visible text from the SMELT RECIPES popup. Return only the visible recipe names and times."
 _PRODUCTION_SCROLL_DELAY_SECONDS = 0.35
 _INPUT_SIGNAL_WEIGHT = 0.35
 _SMELT_OUTPUT_REGION_WEIGHT = 0.20
 _SMELT_INPUT_QTY_WEIGHT = 0.18
+_RECIPE_BUTTON_REL_X = 0.375
+_RECIPE_BUTTON_REL_Y = 0.807
+_SMELT_RECIPE_LAYOUT = (
+    ("Copper Bar", (49, 207, 96, 260), (105, 209, 165, 262)),
+    ("Iron Bar", (184, 207, 231, 260), (240, 209, 300, 262)),
+    ("Lead Bar", (49, 392, 96, 445), (105, 394, 165, 447)),
+    ("Silicon Bar", (184, 392, 231, 445), (240, 394, 300, 447)),
+    ("Aluminum Bar", (49, 577, 96, 630), (105, 579, 165, 632)),
+)
+
+
+@dataclass(slots=True, frozen=True)
+class _SmeltRecipePopupEntry:
+    output_name: str
+    ore_icon_box: tuple[int, int, int, int]
+    output_icon_box: tuple[int, int, int, int]
 
 
 @dataclass(slots=True)
@@ -127,6 +145,17 @@ class ProductionOverviewReader:
         raw_value = str(getattr(result, "value", "") or "").strip()
         left_value = raw_value.split("/", 1)[0].strip()
         return parse_compact_number(left_value), str(getattr(result, "backend", "") or "")
+
+    @classmethod
+    def _popup_recipe_entries(cls) -> tuple[_SmeltRecipePopupEntry, ...]:
+        return tuple(
+            _SmeltRecipePopupEntry(
+                output_name=name,
+                ore_icon_box=ore_icon_box,
+                output_icon_box=output_icon_box,
+            )
+            for name, ore_icon_box, output_icon_box in _SMELT_RECIPE_LAYOUT
+        )
 
     @staticmethod
     def _border_median(arr: np.ndarray) -> np.ndarray:
@@ -417,6 +446,32 @@ class ProductionOverviewReader:
         return _INPUT_SIGNAL_WEIGHT * max(box_scores), "input_template_match"
 
     @classmethod
+    def _foreground_hsv_signature(cls, image: Image.Image) -> tuple[float, float, float]:
+        trimmed = cls._trim_foreground_icon(image, prefer_center_x=0.45, prefer_center_y=0.5)
+        work = trimmed if trimmed is not None else image
+        arr = np.asarray(work.convert("RGB").resize((48, 48)), dtype=np.uint8)
+        if arr.size == 0:
+            return (0.0, 0.0, 0.0)
+        mask = cls._foreground_mask(arr) > 0
+        if not np.any(mask):
+            mask = np.ones(arr.shape[:2], dtype=bool)
+        hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV).astype(np.float32)
+        values = hsv[mask]
+        if values.size == 0:
+            return (0.0, 0.0, 0.0)
+        mean = values.mean(axis=0)
+        return float(mean[0]), float(mean[1]), float(mean[2])
+
+    @classmethod
+    def _color_signature_similarity(cls, template: Image.Image, target: Image.Image) -> float:
+        template_h, template_s, template_v = cls._foreground_hsv_signature(template)
+        target_h, target_s, target_v = cls._foreground_hsv_signature(target)
+        hue_delta = min(abs(template_h - target_h), 180.0 - abs(template_h - target_h)) / 90.0
+        sat_delta = abs(template_s - target_s) / 255.0
+        val_delta = abs(template_v - target_v) / 255.0
+        return max(0.0, 1.0 - ((0.55 * hue_delta) + (0.30 * sat_delta) + (0.15 * val_delta)))
+
+    @classmethod
     def _icon_similarity(cls, template: Image.Image, target: Image.Image) -> float:
         template_work = cls._extract_template_icon(template).resize((56, 56)).convert("RGB")
         target_icon = cls._trim_foreground_icon(target, prefer_center_x=0.5, prefer_center_y=0.5)
@@ -496,6 +551,110 @@ class ProductionOverviewReader:
             backend = f"{backend}+{top_input_backend}"
         return top_name, backend
 
+    def _recipe_button_point(self, rect_key: str) -> tuple[int, int]:
+        rect = getattr(self.rects, "get", lambda _key: None)(rect_key)
+        if rect is None:
+            raise ValueError(f"missing_rect:{rect_key}")
+        x, y, w, h = rect
+        return (
+            int(x + round(w * _RECIPE_BUTTON_REL_X)),
+            int(y + round(h * _RECIPE_BUTTON_REL_Y)),
+        )
+
+    def _read_smelt_recipe_popup_text(self, panel: Image.Image) -> str:
+        result = perception_backend.read_text_from_backends(
+            self.perception,
+            panel,
+            prompt=_SMELT_RECIPE_PANEL_PROMPT,
+            mode="generic",
+            allowed_backend_names=("windows", "legacy"),
+        )
+        return str(getattr(result, "value", "") or "").strip()
+
+    @staticmethod
+    def _normalize_popup_text(text: str | None) -> str:
+        return re.sub(r"\s+", " ", str(text or "").upper()).strip()
+
+    @classmethod
+    def _verified_smelt_recipe_names(cls, text: str | None) -> set[str]:
+        normalized = cls._normalize_popup_text(text)
+        patterns = {
+            "Copper Bar": ("COPPER BAR",),
+            "Iron Bar": ("IRON BAR", "IRON B"),
+            "Lead Bar": ("LEAD BAR",),
+            "Silicon Bar": ("SILICON BAR", "SILICON"),
+            "Aluminum Bar": ("ALUMINUM BAR", "ALUMINIUM BAR", "ALUM"),
+        }
+        return {
+            name
+            for name, variants in patterns.items()
+            if any(variant in normalized for variant in variants)
+        }
+
+    def _open_smelt_recipe_popup(self, *, rect_key: str) -> tuple[Image.Image, set[str]]:
+        point = self._recipe_button_point(rect_key)
+        if not self.actions.click_client_point(point, delay=self._scroll_delay_seconds()):
+            raise ValueError("smelt_recipe_popup_open_failed")
+        panel = self._capture_rect("SMELT_RECIPES_PANEL")
+        if panel is None:
+            raise ValueError("missing_rect:SMELT_RECIPES_PANEL")
+        panel_text = self._read_smelt_recipe_popup_text(panel)
+        normalized = self._normalize_popup_text(panel_text)
+        if "SMELT RECIPES" not in normalized:
+            raise ValueError("smelt_recipe_popup_not_visible")
+        verified_names = self._verified_smelt_recipe_names(panel_text)
+        if len(verified_names) < 4:
+            raise ValueError(f"smelt_recipe_popup_unverified:{panel_text or 'blank'}")
+        return panel, verified_names
+
+    def _close_smelt_recipe_popup(self) -> None:
+        if getattr(self.rects, "get", lambda _key: None)("SMELT_RECIPES_CLOSE") is None:
+            raise ValueError("missing_rect:SMELT_RECIPES_CLOSE")
+        if not self.actions.click_rect_center("SMELT_RECIPES_CLOSE", delay=self._scroll_delay_seconds()):
+            raise ValueError("smelt_recipe_popup_close_failed")
+        panel = self._capture_rect("SMELT_RECIPES_PANEL")
+        if panel is None:
+            raise ValueError("missing_rect:SMELT_RECIPES_PANEL")
+        normalized = self._normalize_popup_text(self._read_smelt_recipe_popup_text(panel))
+        if "SMELT RECIPES" in normalized:
+            raise ValueError("smelt_recipe_popup_close_unverified")
+
+    def _resolve_smelt_output_from_recipe_popup(
+        self,
+        *,
+        card: Image.Image,
+        rect_key: str,
+    ) -> tuple[str, str]:
+        panel = None
+        opened = False
+        try:
+            panel, verified_names = self._open_smelt_recipe_popup(rect_key=rect_key)
+            opened = True
+            target_ore = card.crop((18, 72, 78, 136))
+            target_output = card.crop((132, 72, 212, 136))
+            scored: list[tuple[str, float]] = []
+            for entry in self._popup_recipe_entries():
+                if entry.output_name not in verified_names:
+                    continue
+                ore_icon = panel.crop(entry.ore_icon_box)
+                output_icon = panel.crop(entry.output_icon_box)
+                ore_icon_score = self._icon_similarity(ore_icon, target_ore)
+                ore_color_score = self._color_signature_similarity(ore_icon, target_ore)
+                output_icon_score = self._icon_similarity(output_icon, target_output)
+                score = (0.62 * ore_icon_score) + (0.20 * ore_color_score) + (0.18 * output_icon_score)
+                scored.append((entry.output_name, score))
+            scored.sort(key=lambda item: item[1], reverse=True)
+            if not scored:
+                raise ValueError("smelt_recipe_popup_no_candidates")
+            top_name, top_score = scored[0]
+            next_score = scored[1][1] if len(scored) > 1 else 0.0
+            if top_score < 0.80 or (top_score - next_score) < 0.018:
+                raise ValueError(f"ambiguous_recipe_popup_match:{top_name}:{top_score:.4f}:{next_score:.4f}")
+            return top_name, "smelt_recipe_popup_match"
+        finally:
+            if opened:
+                self._close_smelt_recipe_popup()
+
     def _resolve_active_state(self, *, tab: str, card: Image.Image) -> tuple[bool, str | None, str]:
         timer_text, timer_backend = self._read_timer_text(card)
         normalized = self._normalize_timer_text(timer_text)
@@ -550,16 +709,27 @@ class ProductionOverviewReader:
             )
         output_quantity, quantity_backend = self._read_output_quantity(card)
         input_available_quantity, input_quantity_backend = self._read_input_available_quantity(card)
-        output_name, match_backend = self._resolve_output_name(
-            tab=tab,
-            card=card,
-            templates=templates,
-            inventory_counts=inventory_counts,
-            output_quantity=output_quantity,
-            input_templates=input_templates,
-            ore_inventory_counts=ore_inventory_counts,
-            input_available_quantity=input_available_quantity,
-        )
+        try:
+            output_name, match_backend = self._resolve_output_name(
+                tab=tab,
+                card=card,
+                templates=templates,
+                inventory_counts=inventory_counts,
+                output_quantity=output_quantity,
+                input_templates=input_templates,
+                ore_inventory_counts=ore_inventory_counts,
+                input_available_quantity=input_available_quantity,
+            )
+        except ValueError as exc:
+            if tab != "smelt" or not str(exc).startswith("ambiguous_output_match:"):
+                raise
+            try:
+                output_name, match_backend = self._resolve_smelt_output_from_recipe_popup(
+                    card=card,
+                    rect_key=rect_key,
+                )
+            except Exception as popup_exc:
+                raise ValueError(f"smelt_recipe_popup_fallback_failed:{popup_exc}") from popup_exc
         active, timer_text, state_backend = self._resolve_active_state(tab=tab, card=card)
         backend_parts = [part for part in (match_backend, quantity_backend, input_quantity_backend, state_backend) if part]
         return ProductionOverviewCardState(

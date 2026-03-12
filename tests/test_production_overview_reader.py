@@ -173,6 +173,14 @@ def test_production_overview_reader_uses_smelt_input_quantity_signal_to_break_ti
     assert backend == "icon_template_match+input_quantity_match"
 
 
+def test_production_overview_reader_parses_verified_smelt_recipe_names():
+    verified = ProductionOverviewReader._verified_smelt_recipe_names(
+        "SMELT RECIPES Copper Bar 15s 1.00K Lead Bar 30s Iron B 23s 1.00K Silicon 46s"
+    )
+
+    assert verified == {"Copper Bar", "Iron Bar", "Lead Bar", "Silicon Bar"}
+
+
 def test_production_overview_reader_uses_craft_visual_active_fallback(monkeypatch):
     reader = ProductionOverviewReader(
         rects=None,
@@ -211,6 +219,70 @@ def test_production_overview_reader_keeps_off_without_visual_signals_inactive(mo
     assert active is False
     assert timer_text is None
     assert backend == "fake"
+
+
+def test_production_overview_reader_falls_back_to_smelt_recipe_popup(monkeypatch):
+    card = Image.new("RGB", (240, 295), "black")
+
+    class _SingleRectCapture:
+        def capture_client_bbox(self, rect):
+            _ = rect
+            return card.copy()
+
+    class _SingleRectStore:
+        def get(self, key):
+            if key == "PRODUCTION_CARD1":
+                return (0, 0, 240, 295)
+            return None
+
+    reader = ProductionOverviewReader(
+        rects=_SingleRectStore(),
+        capture=_SingleRectCapture(),
+        actions=_FakeActions(),
+        perception=_FakePerception(),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_card_status",
+        staticmethod(lambda image: "card"),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_read_output_quantity",
+        lambda self, image: (574, "qty"),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_read_input_available_quantity",
+        lambda self, image: (969_870, "input_qty"),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_resolve_output_name",
+        lambda self, **kwargs: (_ for _ in ()).throw(ValueError("ambiguous_output_match:Silicon Bar:1.01:1.00")),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_resolve_smelt_output_from_recipe_popup",
+        lambda self, **kwargs: ("Silicon Bar", "smelt_recipe_popup_match"),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_resolve_active_state",
+        lambda self, **kwargs: (True, "8s", "progress_fill_signal"),
+    )
+
+    state = reader._read_card(
+        slot_index=1,
+        tab="smelt",
+        rect_key="PRODUCTION_CARD1",
+        templates={"Silicon Bar": Image.new("RGB", (10, 10), "green")},
+        inventory_counts={},
+    )
+
+    assert state.output_name == "Silicon Bar"
+    assert state.active is True
+    assert state.backend == "smelt_recipe_popup_match+qty+input_qty+progress_fill_signal"
 
 
 class _FakeActions:

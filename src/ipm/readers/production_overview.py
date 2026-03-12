@@ -18,6 +18,7 @@ _TIMER_PROMPT = "Read only the visible timer text or OFF. Return only the timer 
 _COUNT_PROMPT = "Read only the visible output quantity. Keep suffixes like K or M if present."
 _PRODUCTION_SCROLL_DELAY_SECONDS = 0.35
 _INPUT_SIGNAL_WEIGHT = 0.35
+_SMELT_OUTPUT_REGION_WEIGHT = 0.20
 
 
 @dataclass(slots=True)
@@ -315,6 +316,27 @@ class ProductionOverviewReader:
             best_score = max(best_score, (0.45 * float(raw_score)) + (0.55 * float(edge_score)))
         return max(0.0, best_score)
 
+    def _output_region_bonus(
+        self,
+        *,
+        tab: str,
+        output_name: str,
+        card: Image.Image,
+        output_templates: dict[str, Image.Image],
+    ) -> tuple[float, str]:
+        if tab != "smelt":
+            return 0.0, ""
+        template = self._lookup_template(output_templates, output_name)
+        if template is None:
+            return 0.0, ""
+        box_scores = [
+            self._template_presence_score(template=template, search=card.crop(search_box))
+            for search_box in self._output_candidate_boxes(card)
+        ]
+        if not box_scores:
+            return 0.0, ""
+        return _SMELT_OUTPUT_REGION_WEIGHT * max(box_scores), "output_region_match"
+
     @staticmethod
     def _expected_input_names(*, tab: str, output_name: str) -> tuple[str, ...]:
         if tab == "smelt":
@@ -406,12 +428,20 @@ class ProductionOverviewReader:
                 card=card,
                 input_templates=input_templates or {},
             )
+            output_region_bonus, output_region_backend = self._output_region_bonus(
+                tab=tab,
+                output_name=name,
+                card=card,
+                output_templates=templates,
+            )
             score = (
                 max(self._icon_similarity(template, target_icon) for target_icon in target_icons)
                 + self._quantity_match_bonus(name, quantity=output_quantity, inventory_counts=inventory_counts)
                 + input_bonus
+                + output_region_bonus
             )
-            scored.append((name, score, input_backend))
+            backend_parts = [part for part in (input_backend, output_region_backend) if part]
+            scored.append((name, score, "+".join(backend_parts)))
         scored.sort(key=lambda item: item[1], reverse=True)
         if not scored:
             raise ValueError("icon_templates_missing")

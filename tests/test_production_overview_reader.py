@@ -25,6 +25,11 @@ def test_production_overview_reader_uses_inventory_quantity_to_break_icon_tie(mo
         "_icon_similarity",
         classmethod(lambda cls, template, target: 0.78 if template is alpha else 0.79),
     )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_output_region_bonus",
+        lambda self, **kwargs: (0.0, ""),
+    )
 
     name, backend = reader._resolve_output_name(
         tab="smelt",
@@ -59,6 +64,11 @@ def test_production_overview_reader_uses_input_signal_to_break_icon_tie(monkeypa
         "_input_identity_bonus",
         lambda self, **kwargs: (0.05, "input_template_match") if kwargs["output_name"] == "Alpha" else (0.0, ""),
     )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_output_region_bonus",
+        lambda self, **kwargs: (0.0, ""),
+    )
 
     name, backend = reader._resolve_output_name(
         tab="smelt",
@@ -71,6 +81,40 @@ def test_production_overview_reader_uses_input_signal_to_break_icon_tie(monkeypa
 
     assert name == "Alpha"
     assert backend == "icon_template_match+input_template_match"
+
+
+def test_production_overview_reader_uses_smelt_output_region_signal_to_break_tie(monkeypatch):
+    reader = ProductionOverviewReader(
+        rects=None,
+        capture=None,
+        actions=None,
+        perception=_FakePerception(),
+    )
+    card = Image.new("RGB", (240, 295), "black")
+    alpha = Image.new("RGB", (10, 10), "red")
+    beta = Image.new("RGB", (10, 10), "blue")
+    monkeypatch.setattr(ProductionOverviewReader, "_candidate_output_icons", classmethod(lambda cls, image: [image]))
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_icon_similarity",
+        classmethod(lambda cls, template, target: 0.84 if template is alpha else 0.85),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_output_region_bonus",
+        lambda self, **kwargs: (0.03, "output_region_match") if kwargs["output_name"] == "Alpha" else (0.0, ""),
+    )
+
+    name, backend = reader._resolve_output_name(
+        tab="smelt",
+        card=card,
+        templates={"Alpha": alpha, "Beta": beta},
+        inventory_counts={},
+        output_quantity=None,
+    )
+
+    assert name == "Alpha"
+    assert backend == "icon_template_match+output_region_match"
 
 
 def test_production_overview_reader_uses_craft_visual_active_fallback(monkeypatch):

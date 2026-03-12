@@ -16,9 +16,11 @@ from .common import parse_compact_number
 _TIMER_TEXT_RE = re.compile(r"[0-9].*[SMH]|[0-9]+:[0-9]+", re.IGNORECASE)
 _TIMER_PROMPT = "Read only the visible timer text or OFF. Return only the timer text."
 _COUNT_PROMPT = "Read only the visible output quantity. Keep suffixes like K or M if present."
+_INPUT_COUNT_PROMPT = "Read only the visible left input quantity text like 404/1.00K. Return only that quantity text."
 _PRODUCTION_SCROLL_DELAY_SECONDS = 0.35
 _INPUT_SIGNAL_WEIGHT = 0.35
 _SMELT_OUTPUT_REGION_WEIGHT = 0.20
+_SMELT_INPUT_QTY_WEIGHT = 0.18
 
 
 @dataclass(slots=True)
@@ -118,6 +120,13 @@ class ProductionOverviewReader:
         crop = card.crop((140, 80, 230, 135))
         result = self.perception.read_text(crop, prompt=_COUNT_PROMPT, mode="ore_qty")
         return parse_compact_number(getattr(result, "value", "")), str(getattr(result, "backend", "") or "")
+
+    def _read_input_available_quantity(self, card: Image.Image) -> tuple[int | None, str]:
+        crop = card.crop((5, 85, 120, 125))
+        result = self.perception.read_text(crop, prompt=_INPUT_COUNT_PROMPT, mode="generic")
+        raw_value = str(getattr(result, "value", "") or "").strip()
+        left_value = raw_value.split("/", 1)[0].strip()
+        return parse_compact_number(left_value), str(getattr(result, "backend", "") or "")
 
     @staticmethod
     def _border_median(arr: np.ndarray) -> np.ndarray:
@@ -337,6 +346,31 @@ class ProductionOverviewReader:
             return 0.0, ""
         return _SMELT_OUTPUT_REGION_WEIGHT * max(box_scores), "output_region_match"
 
+    def _smelt_input_quantity_bonus(
+        self,
+        *,
+        output_name: str,
+        input_available_quantity: int | None,
+        ore_inventory_counts: dict[str, int] | None,
+    ) -> tuple[float, str]:
+        if input_available_quantity is None or not ore_inventory_counts:
+            return 0.0, ""
+        expected_inputs = self._expected_input_names(tab="smelt", output_name=output_name)
+        if not expected_inputs:
+            return 0.0, ""
+        expected_ore_name = expected_inputs[0]
+        known_quantity = None
+        for alias in self._material_aliases(expected_ore_name):
+            if alias in ore_inventory_counts:
+                known_quantity = int(ore_inventory_counts[alias])
+                break
+        if known_quantity is None:
+            return 0.0, ""
+        tolerance = max(3, int(round(max(1, input_available_quantity) * 0.02)))
+        if abs(known_quantity - input_available_quantity) <= tolerance:
+            return _SMELT_INPUT_QTY_WEIGHT, "input_quantity_match"
+        return 0.0, ""
+
     @staticmethod
     def _expected_input_names(*, tab: str, output_name: str) -> tuple[str, ...]:
         if tab == "smelt":
@@ -416,6 +450,8 @@ class ProductionOverviewReader:
         inventory_counts: dict[str, int],
         output_quantity: int | None,
         input_templates: dict[str, Image.Image] | None = None,
+        ore_inventory_counts: dict[str, int] | None = None,
+        input_available_quantity: int | None = None,
     ) -> tuple[str, str]:
         target_icons = self._candidate_output_icons(card)
         if not target_icons:
@@ -434,13 +470,19 @@ class ProductionOverviewReader:
                 card=card,
                 output_templates=templates,
             )
+            input_quantity_bonus, input_quantity_backend = self._smelt_input_quantity_bonus(
+                output_name=name,
+                input_available_quantity=input_available_quantity,
+                ore_inventory_counts=ore_inventory_counts,
+            )
             score = (
                 max(self._icon_similarity(template, target_icon) for target_icon in target_icons)
                 + self._quantity_match_bonus(name, quantity=output_quantity, inventory_counts=inventory_counts)
                 + input_bonus
                 + output_region_bonus
+                + input_quantity_bonus
             )
-            backend_parts = [part for part in (input_backend, output_region_backend) if part]
+            backend_parts = [part for part in (input_backend, output_region_backend, input_quantity_backend) if part]
             scored.append((name, score, "+".join(backend_parts)))
         scored.sort(key=lambda item: item[1], reverse=True)
         if not scored:
@@ -482,6 +524,7 @@ class ProductionOverviewReader:
         templates: dict[str, Image.Image],
         inventory_counts: dict[str, int],
         input_templates: dict[str, Image.Image] | None = None,
+        ore_inventory_counts: dict[str, int] | None = None,
     ) -> ProductionOverviewCardState:
         card = self._capture_rect(rect_key)
         if card is None:
@@ -506,6 +549,7 @@ class ProductionOverviewReader:
                 backend="locked_slot",
             )
         output_quantity, quantity_backend = self._read_output_quantity(card)
+        input_available_quantity, input_quantity_backend = self._read_input_available_quantity(card)
         output_name, match_backend = self._resolve_output_name(
             tab=tab,
             card=card,
@@ -513,9 +557,11 @@ class ProductionOverviewReader:
             inventory_counts=inventory_counts,
             output_quantity=output_quantity,
             input_templates=input_templates,
+            ore_inventory_counts=ore_inventory_counts,
+            input_available_quantity=input_available_quantity,
         )
         active, timer_text, state_backend = self._resolve_active_state(tab=tab, card=card)
-        backend_parts = [part for part in (match_backend, quantity_backend, state_backend) if part]
+        backend_parts = [part for part in (match_backend, quantity_backend, input_quantity_backend, state_backend) if part]
         return ProductionOverviewCardState(
             slot_index=slot_index,
             tab=tab,
@@ -621,6 +667,7 @@ class ProductionOverviewReader:
         templates: dict[str, Image.Image],
         inventory_counts: dict[str, int],
         input_templates: dict[str, Image.Image] | None = None,
+        ore_inventory_counts: dict[str, int] | None = None,
     ) -> list[ProductionOverviewCardState]:
         for rect_key in ("PRODUCTION_CARD1", "PRODUCTION_CARD2", "PRODUCTION_CARD3", "PRODUCTION_CARD4"):
             if getattr(self.rects, "get", lambda _key: None)(rect_key) is None:
@@ -631,15 +678,15 @@ class ProductionOverviewReader:
             raise ValueError(f"open_tab_failed:{tab}")
         top_anchor = self._scroll_to_top_view()
         cards = [
-            self._read_card(slot_index=1, tab=tab, rect_key="PRODUCTION_CARD1", templates=templates, inventory_counts=inventory_counts, input_templates=input_templates),
-            self._read_card(slot_index=2, tab=tab, rect_key="PRODUCTION_CARD2", templates=templates, inventory_counts=inventory_counts, input_templates=input_templates),
+            self._read_card(slot_index=1, tab=tab, rect_key="PRODUCTION_CARD1", templates=templates, inventory_counts=inventory_counts, input_templates=input_templates, ore_inventory_counts=ore_inventory_counts),
+            self._read_card(slot_index=2, tab=tab, rect_key="PRODUCTION_CARD2", templates=templates, inventory_counts=inventory_counts, input_templates=input_templates, ore_inventory_counts=ore_inventory_counts),
         ]
         self._scroll_to_lower_cards(top_anchor=top_anchor)
         try:
             cards.extend(
                 [
-                    self._read_card(slot_index=3, tab=tab, rect_key="PRODUCTION_CARD3", templates=templates, inventory_counts=inventory_counts, input_templates=input_templates),
-                    self._read_card(slot_index=4, tab=tab, rect_key="PRODUCTION_CARD4", templates=templates, inventory_counts=inventory_counts, input_templates=input_templates),
+                    self._read_card(slot_index=3, tab=tab, rect_key="PRODUCTION_CARD3", templates=templates, inventory_counts=inventory_counts, input_templates=input_templates, ore_inventory_counts=ore_inventory_counts),
+                    self._read_card(slot_index=4, tab=tab, rect_key="PRODUCTION_CARD4", templates=templates, inventory_counts=inventory_counts, input_templates=input_templates, ore_inventory_counts=ore_inventory_counts),
                 ]
             )
         finally:

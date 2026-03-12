@@ -30,6 +30,11 @@ def test_production_overview_reader_uses_inventory_quantity_to_break_icon_tie(mo
         "_output_region_bonus",
         lambda self, **kwargs: (0.0, ""),
     )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_smelt_input_quantity_bonus",
+        lambda self, **kwargs: (0.0, ""),
+    )
 
     name, backend = reader._resolve_output_name(
         tab="smelt",
@@ -69,6 +74,11 @@ def test_production_overview_reader_uses_input_signal_to_break_icon_tie(monkeypa
         "_output_region_bonus",
         lambda self, **kwargs: (0.0, ""),
     )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_smelt_input_quantity_bonus",
+        lambda self, **kwargs: (0.0, ""),
+    )
 
     name, backend = reader._resolve_output_name(
         tab="smelt",
@@ -104,6 +114,11 @@ def test_production_overview_reader_uses_smelt_output_region_signal_to_break_tie
         "_output_region_bonus",
         lambda self, **kwargs: (0.03, "output_region_match") if kwargs["output_name"] == "Alpha" else (0.0, ""),
     )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_smelt_input_quantity_bonus",
+        lambda self, **kwargs: (0.0, ""),
+    )
 
     name, backend = reader._resolve_output_name(
         tab="smelt",
@@ -115,6 +130,47 @@ def test_production_overview_reader_uses_smelt_output_region_signal_to_break_tie
 
     assert name == "Alpha"
     assert backend == "icon_template_match+output_region_match"
+
+
+def test_production_overview_reader_uses_smelt_input_quantity_signal_to_break_tie(monkeypatch):
+    reader = ProductionOverviewReader(
+        rects=None,
+        capture=None,
+        actions=None,
+        perception=_FakePerception(),
+    )
+    card = Image.new("RGB", (240, 295), "black")
+    alpha = Image.new("RGB", (10, 10), "red")
+    beta = Image.new("RGB", (10, 10), "blue")
+    monkeypatch.setattr(ProductionOverviewReader, "_candidate_output_icons", classmethod(lambda cls, image: [image]))
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_icon_similarity",
+        classmethod(lambda cls, template, target: 0.84 if template is alpha else 0.85),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_output_region_bonus",
+        lambda self, **kwargs: (0.0, ""),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_smelt_input_quantity_bonus",
+        lambda self, **kwargs: (0.03, "input_quantity_match") if kwargs["output_name"] == "Alpha" else (0.0, ""),
+    )
+
+    name, backend = reader._resolve_output_name(
+        tab="smelt",
+        card=card,
+        templates={"Alpha": alpha, "Beta": beta},
+        inventory_counts={},
+        output_quantity=None,
+        ore_inventory_counts={"Lead": 404},
+        input_available_quantity=404,
+    )
+
+    assert name == "Alpha"
+    assert backend == "icon_template_match+input_quantity_match"
 
 
 def test_production_overview_reader_uses_craft_visual_active_fallback(monkeypatch):

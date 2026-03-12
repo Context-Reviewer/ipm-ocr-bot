@@ -249,8 +249,9 @@ class ProductionFloorLiveStateReader:
             seam_status["active_crafter_assignments"] = self._overview_seam_blocker(kind="craft", blocker=blocker)
         try:
             ore_templates: dict[str, object] = {}
+            ore_counts: dict[str, int] = {}
             try:
-                _ores, ore_templates = self._read_inventory_tab(
+                ore_counts, ore_templates = self._read_inventory_tab(
                     tab_name="ores",
                     open_tab=self.actions.open_ores_panel,
                     known_names=list(RESOURCE_ROW_NAMES),
@@ -258,6 +259,7 @@ class ProductionFloorLiveStateReader:
                 )
             except Exception:
                 ore_templates = {}
+                ore_counts = {}
             bars, bar_templates = self._read_inventory_tab(
                 tab_name="bars",
                 open_tab=self.actions.open_alloys_panel,
@@ -274,6 +276,7 @@ class ProductionFloorLiveStateReader:
             smelter_queue: dict[str, int] = {}
             crafter_queue: dict[str, int] = {}
             ore_templates = _template_bank_with_aliases(ore_templates)
+            ore_counts = _template_bank_with_aliases({name: value for name, value in ore_counts.items()})
             bar_templates = _template_bank_with_aliases(bar_templates)
             item_templates = _template_bank_with_aliases(item_templates)
             if production_reader is not None and not missing_overview_rects:
@@ -284,6 +287,7 @@ class ProductionFloorLiveStateReader:
                         templates={name: image for name, image in bar_templates.items() if name in allowed_overview_outputs("smelt")},
                         inventory_counts=bars,
                         input_templates=ore_templates,
+                        ore_inventory_counts={name: int(value) for name, value in ore_counts.items()},
                     )
                     smelter_queue = parse_active_overview_cards(
                         smelter_cards,

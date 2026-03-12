@@ -102,14 +102,14 @@ class FakeInventoryReader:
 
 
 class FakeProductionReader:
-    def read_cards(self, *, tab, open_tab, templates, inventory_counts, input_templates=None):
+    def read_cards(self, *, tab, open_tab, templates, inventory_counts, input_templates=None, ore_inventory_counts=None):
         if not open_tab():
             raise ValueError("open_tab_failed")
         if not templates:
             raise ValueError("missing_templates")
         if not inventory_counts:
             raise ValueError("missing_inventory")
-        _ = input_templates
+        _ = input_templates, ore_inventory_counts
         if tab == "smelt":
             return [
                 ProductionOverviewCardState(slot_index=1, tab="smelt", output_name="Lead Bar", active=False, timer_text=None, backend="fake"),

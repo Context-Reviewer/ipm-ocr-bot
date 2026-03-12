@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 import sys
 import time
@@ -17,6 +18,8 @@ sys.path.insert(0, str(SRC_ROOT))
 
 from ipm.app import build_application
 from ipm.focus import ensure_focus_result
+
+_RECENT_CYCLE_TAIL_LIMIT = 5
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -84,6 +87,14 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     tmp_path.replace(path)
 
 
+def _session_run_summary_payload(run_payload: dict[str, Any]) -> dict[str, Any]:
+    summary = _run_summary_payload(run_payload)
+    summary["timestamp"] = run_payload.get("timestamp")
+    summary["artifact_write_ok"] = bool(run_payload.get("artifact_write_ok", True))
+    summary["artifact_path"] = run_payload.get("artifact_path")
+    return summary
+
+
 def _session_summary_payload(
     *,
     started_at: str,
@@ -99,22 +110,48 @@ def _session_summary_payload(
     exception_count = 0
     focus_unavailable_count = 0
     artifact_write_failure_count = 0
+    run_kind_counts: Counter[str] = Counter()
+    action_outcome_counts: Counter[str] = Counter()
+    panel_class_counts: Counter[str] = Counter()
+    escalation_reason_counts: Counter[str] = Counter()
+    slow_panel_class_counts: Counter[str] = Counter()
+    last_successful_cycle_at: str | None = None
+    last_action_bearing_cycle_at: str | None = None
+    last_exception_at: str | None = None
     summaries: list[dict[str, Any]] = []
     for run_payload in runs:
-        summary = _run_summary_payload(run_payload)
+        summary = _session_run_summary_payload(run_payload)
         summaries.append(summary)
-        if summary.get("run_kind") == "no_op":
+        run_kind = str(summary.get("run_kind") or "unknown")
+        action_outcome = str(summary.get("action_outcome") or "unknown")
+        run_kind_counts[run_kind] += 1
+        action_outcome_counts[action_outcome] += 1
+        if run_kind == "no_op":
             no_op_count += 1
-        if summary.get("run_kind") == "action_bearing":
+        if run_kind == "action_bearing":
             action_bearing_count += 1
-        if summary.get("action_outcome") == "verified":
+            last_action_bearing_cycle_at = str(run_payload.get("timestamp") or "")
+        if action_outcome == "verified":
             verified_action_count += 1
         if run_payload.get("error") == "focus_unavailable":
             focus_unavailable_count += 1
         if bool(run_payload.get("task_exception")):
             exception_count += 1
+            last_exception_at = str(run_payload.get("timestamp") or "")
         if not bool(run_payload.get("artifact_write_ok", True)):
             artifact_write_failure_count += 1
+        if not run_payload.get("error") and not bool(run_payload.get("task_exception")):
+            last_successful_cycle_at = str(run_payload.get("timestamp") or "")
+        observability = ((run_payload.get("task") or {}).get("details") or {}).get("observability") or {}
+        scan = observability.get("scan") or {}
+        for key, counter in (
+            ("panel_class_counts", panel_class_counts),
+            ("escalation_reason_counts", escalation_reason_counts),
+            ("slow_panel_class_counts", slow_panel_class_counts),
+        ):
+            values = scan.get(key) or {}
+            for name, count in values.items():
+                counter[str(name)] += int(count)
     return {
         "started_at": started_at,
         "completed_at": datetime.now().isoformat(timespec="seconds"),
@@ -127,8 +164,17 @@ def _session_summary_payload(
         "exception_count": exception_count,
         "focus_unavailable_count": focus_unavailable_count,
         "artifact_write_failure_count": artifact_write_failure_count,
+        "run_kind_counts": dict(run_kind_counts),
+        "action_outcome_counts": dict(action_outcome_counts),
+        "panel_class_counts": dict(panel_class_counts),
+        "escalation_reason_counts": dict(escalation_reason_counts),
+        "slow_panel_class_counts": dict(slow_panel_class_counts),
+        "last_successful_cycle_at": last_successful_cycle_at,
+        "last_action_bearing_cycle_at": last_action_bearing_cycle_at,
+        "last_exception_at": last_exception_at,
         "stop_reason": stop_reason,
         "limits": limits,
+        "recent_cycles_tail": summaries[-_RECENT_CYCLE_TAIL_LIMIT:],
         "runs": summaries,
     }
 

@@ -1,4 +1,5 @@
 from PIL import Image
+from PIL import ImageDraw
 
 from ipm.config import RuntimeConfig
 from ipm.readers.inventory_panel import InventoryPanelReader
@@ -77,3 +78,18 @@ def test_inventory_panel_reader_matches_multiword_item_name_from_row_text():
     assert rows == {
         1: InventoryRowState(name="Copper Wire", quantity=82_000, backend="fake"),
     }
+
+
+def test_inventory_panel_reader_detects_panel_structure_from_list_like_image():
+    image = Image.new("RGB", (240, 180), "#171d29")
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle((8, 20, 228, 64), radius=18, outline="#3bdcff", width=2, fill="#27506d")
+    draw.rounded_rectangle((8, 74, 228, 118), radius=18, outline="#3bdcff", width=2, fill="#27506d")
+
+    assert InventoryPanelReader._panel_structure_present(image) is True
+
+
+def test_inventory_panel_reader_rejects_blank_panel_structure():
+    image = Image.new("RGB", (240, 180), "#111111")
+
+    assert InventoryPanelReader._panel_structure_present(image) is False

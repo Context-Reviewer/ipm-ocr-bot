@@ -1,4 +1,6 @@
 from PIL import Image
+import production_floor_live_state as live_state_module
+import pytest
 
 from ipm.state import InventoryRowState, ProductionOverviewCardState
 from production_floor_live_state import ProductionFloorLiveStateReader
@@ -67,6 +69,7 @@ class FakeActions:
 class FakeInventoryReader:
     def __init__(self, actions):
         self.actions = actions
+        self.capture_calls = 0
         self.pages = {
             ("ores", 0): {
                 1: InventoryRowState(name="Copper", quantity=500, backend="fake"),
@@ -99,6 +102,40 @@ class FakeInventoryReader:
     def read_visible_rows(self, *, known_names, aliases=None):
         _ = known_names, aliases
         return self.pages.get((self.actions.current_tab, self.actions.page_index), {})
+
+    def _capture_key(self, key):
+        _ = key
+        self.capture_calls += 1
+        return Image.new("RGB", (240, 180), "#223044")
+
+    def _panel_structure_present(self, image):
+        _ = image
+        return True
+
+
+class FlakyFirstPageInventoryReader(FakeInventoryReader):
+    def __init__(self, actions, *, flaky_tab):
+        super().__init__(actions)
+        self.flaky_tab = flaky_tab
+        self.calls = {}
+
+    def read_visible_rows(self, *, known_names, aliases=None):
+        _ = known_names, aliases
+        key = (self.actions.current_tab, self.actions.page_index)
+        self.calls[key] = self.calls.get(key, 0) + 1
+        if key == (self.flaky_tab, 0) and self.calls[key] == 1:
+            return {}
+        return super().read_visible_rows(known_names=known_names, aliases=aliases)
+
+
+class StructureMissingInventoryReader(FakeInventoryReader):
+    def read_visible_rows(self, *, known_names, aliases=None):
+        _ = known_names, aliases
+        return {}
+
+    def _panel_structure_present(self, image):
+        _ = image
+        return False
 
 
 class FakeProductionReader:
@@ -212,3 +249,38 @@ def test_production_floor_live_state_reads_bars_items_and_overview_assignment_qu
         },
     }
     assert actions.reset_calls == 1
+
+
+def test_production_floor_live_state_rereads_first_inventory_page_when_structure_present(monkeypatch):
+    monkeypatch.setattr(live_state_module.time, "sleep", lambda _seconds: None)
+    actions = FakeActions()
+    reader = _TestableProductionFloorLiveStateReader(
+        config=type("Config", (), {"visible_ore_rows": 2})(),
+        rects=FakeRects(),
+        capture=FakeCapture(),
+        actions=actions,
+        inventory_reader=FlakyFirstPageInventoryReader(actions, flaky_tab="items"),
+        production_reader=FakeProductionReader(),
+    )
+
+    result = reader.read()
+
+    assert result["items"] == {
+        "Copper Wire": 9,
+    }
+
+
+def test_production_floor_live_state_fails_closed_when_first_inventory_page_has_no_structure(monkeypatch):
+    monkeypatch.setattr(live_state_module.time, "sleep", lambda _seconds: None)
+    actions = FakeActions()
+    reader = _TestableProductionFloorLiveStateReader(
+        config=type("Config", (), {"visible_ore_rows": 2})(),
+        rects=FakeRects(),
+        capture=FakeCapture(),
+        actions=actions,
+        inventory_reader=StructureMissingInventoryReader(actions),
+        production_reader=FakeProductionReader(),
+    )
+
+    with pytest.raises(ValueError, match="unreadable_page:bars:1"):
+        reader.read()

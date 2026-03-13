@@ -4,6 +4,9 @@ from dataclasses import dataclass
 import re
 import unicodedata
 
+import cv2
+import numpy as np
+
 from ..config import RuntimeConfig
 from ..rects import RectStore
 from ..state import InventoryRowState
@@ -77,6 +80,23 @@ class InventoryPanelReader:
         populated = sum(1 for row in rows.values() if row.name and row.quantity is not None)
         required = 1 if self.config.visible_ore_rows <= 1 else 2
         return populated >= required
+
+    @staticmethod
+    def _panel_structure_present(image) -> bool:
+        if image is None:
+            return False
+        gray = np.asarray(image.convert("L"), dtype=np.uint8)
+        if gray.size == 0:
+            return False
+        edge = cv2.Canny(gray, 40, 120)
+        dynamic_range = float(int(gray.max()) - int(gray.min()))
+        dark_fraction = float(np.mean(gray <= 90))
+        edge_fraction = float(np.mean(edge > 0)) if edge.size else 0.0
+        return bool(
+            dynamic_range >= 35.0
+            and dark_fraction >= 0.45
+            and edge_fraction >= 0.006
+        )
 
     @staticmethod
     def _rows_from_text(

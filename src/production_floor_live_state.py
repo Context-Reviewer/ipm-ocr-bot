@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from math import ceil
+import time
 from typing import Any, Callable
 
 from PIL import ImageChops, ImageStat
@@ -17,6 +18,9 @@ from production_overview_seams import (
     required_production_overview_rects,
     seam_contract_summary,
 )
+
+_INVENTORY_FIRST_PAGE_READ_ATTEMPTS = 3
+_INVENTORY_PAGE_REREAD_DELAY_SECONDS = 0.12
 
 
 def _alloy_inventory_names() -> list[str]:
@@ -152,7 +156,23 @@ class ProductionFloorLiveStateReader:
         seen_pages: set[tuple[tuple[str, int], ...]] = set()
         stagnant_pages = 0
         for page_index in range(max_pages):
-            rows = self.inventory_reader.read_visible_rows(known_names=known_names, aliases=aliases)
+            rows: dict[int, Any] = {}
+            structure_present = False
+            attempts = _INVENTORY_FIRST_PAGE_READ_ATTEMPTS if page_index == 0 else 1
+            for attempt in range(attempts):
+                rows = self.inventory_reader.read_visible_rows(known_names=known_names, aliases=aliases)
+                fingerprint = tuple(
+                    (str(row.name), int(row.quantity))
+                    for row in rows.values()
+                    if str(getattr(row, "name", "") or "").strip() and getattr(row, "quantity", None) is not None
+                )
+                if fingerprint:
+                    break
+                panel_image = self.inventory_reader._capture_key("ORES_PANEL_TEXT")
+                structure_present = self.inventory_reader._panel_structure_present(panel_image)
+                if not structure_present or attempt + 1 >= attempts:
+                    break
+                time.sleep(_INVENTORY_PAGE_REREAD_DELAY_SECONDS)
             for row_index, row in rows.items():
                 row_name = str(getattr(row, "name", "") or "").strip()
                 if not row_name or row_name in templates:

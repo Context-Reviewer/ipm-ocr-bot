@@ -646,6 +646,76 @@ def test_production_overview_reader_uses_upper_rects_for_lower_view(monkeypatch)
     ]
 
 
+def test_production_overview_reader_reopens_tab_before_scroll_back(monkeypatch):
+    reader = ProductionOverviewReader(
+        rects=_FakeRects(),
+        capture=_FakeCapture([Image.new("RGB", (240, 295), "#123456")]),
+        actions=_FakeActions(),
+        perception=_FakePerception(),
+    )
+    open_calls = []
+    scroll_back_calls = []
+
+    monkeypatch.setattr(ProductionOverviewReader, "_scroll_to_top_view", lambda self: Image.new("RGB", (240, 150), "#123456"))
+    monkeypatch.setattr(ProductionOverviewReader, "_scroll_to_lower_cards", lambda self, top_anchor: None)
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_read_card",
+        lambda self, **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_scroll_back_to_top",
+        lambda self, *, top_anchor: scroll_back_calls.append(top_anchor),
+    )
+
+    def _open_tab():
+        open_calls.append(True)
+        return True
+
+    reader.read_cards(
+        tab="smelt",
+        open_tab=_open_tab,
+        templates={"Iron Bar": Image.new("RGB", (10, 10), "white")},
+        inventory_counts={"Iron Bar": 1},
+    )
+
+    assert len(open_calls) == 2
+    assert len(scroll_back_calls) == 1
+
+
+def test_production_overview_reader_fails_closed_when_reopen_before_scroll_back_fails(monkeypatch):
+    reader = ProductionOverviewReader(
+        rects=_FakeRects(),
+        capture=_FakeCapture([Image.new("RGB", (240, 295), "#123456")]),
+        actions=_FakeActions(),
+        perception=_FakePerception(),
+    )
+
+    monkeypatch.setattr(ProductionOverviewReader, "_scroll_to_top_view", lambda self: Image.new("RGB", (240, 150), "#123456"))
+    monkeypatch.setattr(ProductionOverviewReader, "_scroll_to_lower_cards", lambda self, top_anchor: None)
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_read_card",
+        lambda self, **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_scroll_back_to_top",
+        lambda self, *, top_anchor: None,
+    )
+
+    open_results = iter([True, False])
+
+    with pytest.raises(ValueError, match="open_tab_failed:smelt"):
+        reader.read_cards(
+            tab="smelt",
+            open_tab=lambda: next(open_results),
+            templates={"Iron Bar": Image.new("RGB", (10, 10), "white")},
+            inventory_counts={"Iron Bar": 1},
+        )
+
+
 def test_production_overview_reader_closes_smelt_recipe_popup_by_visual_diff():
     popup_panel = Image.new("RGB", (350, 580), "#112244")
     closed_panel = Image.new("RGB", (350, 580), "#001122")

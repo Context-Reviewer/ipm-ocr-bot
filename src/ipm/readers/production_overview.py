@@ -2116,5 +2116,7 @@ class ProductionOverviewReader:
                 ]
             )
         finally:
+            if not open_tab():
+                raise ValueError(f"open_tab_failed:{tab}")
             self._scroll_back_to_top(top_anchor=top_anchor)
         return cards

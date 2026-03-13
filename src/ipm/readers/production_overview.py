@@ -28,17 +28,34 @@ _SMELT_INPUT_QTY_WEIGHT = 0.18
 _ACTIVE_FILL_HINT_MIN = 0.008
 _ACTIVE_FILL_CONFIDENT_MIN = 0.05
 _PRODUCTION_TOP_SCROLL_MAX_ATTEMPTS = 3
+_LOCALIZED_TARGET_DIFF_MIN = 26.0
+_LOCALIZED_TARGET_MIN_AREA = 18
+_LOCALIZED_TARGET_EXPAND_PX = 2
+_CANCEL_TARGET_DARK_DELTA = 18
+_ARROW_TARGET_DIFF_MIN = 12.0
+_ARROW_TARGET_MIN_AREA = 4
+_ARROW_SEARCH_Y_TOP = 0.12
+_ARROW_SEARCH_Y_BOTTOM = 0.58
+_SMELT_ARROW_SEARCH_Y_TOP = 0.00
+_SMELT_ARROW_SEARCH_Y_BOTTOM = 0.50
+_ARROW_SHIFT_Y_SCALE = 0.35
 _RECIPE_BUTTON_REL_X = 0.375
 _RECIPE_BUTTON_REL_Y = 0.807
+_SMELT_ORE_SEARCH_SHIFT_X = 0.14
+_SMELT_ORE_SEARCH_SHIFT_Y = -0.04
+_SMELT_ORE_SEARCH_BOTTOM_TRIM = 0.28
+_SMELT_ICON_CENTER_X_SEPARATION = 0.48
+_SMELT_ICON_ESTIMATED_BOX_WIDTH = 0.23
+_SMELT_ICON_ESTIMATED_BOX_HEIGHT = 0.16
 _TOOLTIP_PROBE_OFFSETS = (
     ("center", (0.00, 0.00)),
     ("upper_left", (-0.15, -0.15)),
     ("lower_right", (0.15, 0.15)),
 )
-_TOOLTIP_SEARCH_OVERLAP_X = 0.10
-_TOOLTIP_SEARCH_RIGHT_EXTENT = 3.0
-_TOOLTIP_SEARCH_TOP_FROM_CENTER = 0.60
-_TOOLTIP_SEARCH_BOTTOM_FROM_CENTER = 0.40
+_TOOLTIP_SEARCH_LEFT_FROM_ICON = 0.35
+_TOOLTIP_SEARCH_RIGHT_EXTENT = 4.30
+_TOOLTIP_SEARCH_TOP_FROM_CENTER = 1.10
+_TOOLTIP_SEARCH_BOTTOM_FROM_CENTER = 1.00
 _SMELT_RECIPE_SCROLL_DELTA = -120
 _SMELT_RECIPE_SLOT_LAYOUT_PAGE0 = (
     ((49, 207, 96, 260), (105, 209, 165, 262)),
@@ -79,6 +96,32 @@ class _TooltipProbePoint:
 class _TooltipCropCandidate:
     crop_id: str
     box: tuple[int, int, int, int]
+
+
+@dataclass(slots=True, frozen=True)
+class _ProductionCardLayout:
+    recipe_button_box: tuple[int, int, int, int]
+    input_icon_box: tuple[int, int, int, int]
+    output_icon_box: tuple[int, int, int, int]
+    progress_bar_box: tuple[int, int, int, int]
+    cancel_box: tuple[int, int, int, int]
+    extra_icon_regions: tuple[_TooltipIconRegion, ...] = ()
+    arrow_search_box: tuple[int, int, int, int] | None = None
+    localized_arrow_box: tuple[int, int, int, int] | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class _TooltipProbeMarker:
+    point: tuple[int, int]
+    marker_label: str
+    color: str = "#ffd400"
+
+
+@dataclass(slots=True, frozen=True)
+class _LocalizedTooltipTarget:
+    kind: str
+    search_box: tuple[int, int, int, int]
+    localized_box: tuple[int, int, int, int] | None
 
 
 @dataclass(slots=True)
@@ -338,8 +381,433 @@ class ProductionOverviewReader:
         )
 
     @staticmethod
+    def _clip_box(
+        box: tuple[int, int, int, int],
+        *,
+        card_size: tuple[int, int],
+    ) -> tuple[int, int, int, int]:
+        card_width, card_height = card_size
+        left, top, right, bottom = box
+        clipped_left = max(0, min(card_width - 1, int(left)))
+        clipped_top = max(0, min(card_height - 1, int(top)))
+        clipped_right = max(clipped_left + 1, min(card_width, int(right)))
+        clipped_bottom = max(clipped_top + 1, min(card_height, int(bottom)))
+        return (clipped_left, clipped_top, clipped_right, clipped_bottom)
+
+    @classmethod
+    def _detect_recipe_button_box(cls, card: Image.Image) -> tuple[int, int, int, int] | None:
+        width, height = card.size
+        search_box = (
+            int(round(width * 0.10)),
+            int(round(height * 0.68)),
+            int(round(width * 0.90)),
+            int(round(height * 0.98)),
+        )
+        crop = card.crop(search_box)
+        arr = np.asarray(crop.convert("RGB"), dtype=np.uint8)
+        if arr.size == 0:
+            return None
+        mask = (
+            (arr[..., 1] >= 150)
+            & (arr[..., 2] >= 150)
+            & (arr[..., 0] <= 120)
+        ).astype(np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 5), dtype=np.uint8))
+        num, _labels, stats, _centroids = cv2.connectedComponentsWithStats(mask, 8)
+        best: tuple[int, tuple[int, int, int, int]] | None = None
+        for index in range(1, num):
+            x, y, w, h, area = (int(value) for value in stats[index])
+            if area < 80:
+                continue
+            if w < int(round(width * 0.18)) or h < int(round(height * 0.06)):
+                continue
+            if w > int(round(width * 0.55)) or h > int(round(height * 0.22)):
+                continue
+            candidate = (area, (search_box[0] + x, search_box[1] + y, search_box[0] + x + w, search_box[1] + y + h))
+            if best is None or candidate[0] > best[0]:
+                best = candidate
+        return best[1] if best is not None else None
+
+    @classmethod
+    def _expected_arrow_search_box(
+        cls,
+        *,
+        tab: str,
+        input_box: tuple[int, int, int, int],
+        output_box: tuple[int, int, int, int],
+        card_size: tuple[int, int],
+    ) -> tuple[int, int, int, int]:
+        card_width, card_height = card_size
+        input_height = max(1, input_box[3] - input_box[1])
+        output_height = max(1, output_box[3] - output_box[1])
+        avg_height = (input_height + output_height) / 2.0
+        if tab == "smelt":
+            top_scale = _SMELT_ARROW_SEARCH_Y_TOP
+            bottom_scale = _SMELT_ARROW_SEARCH_Y_BOTTOM
+        else:
+            top_scale = _ARROW_SEARCH_Y_TOP
+            bottom_scale = _ARROW_SEARCH_Y_BOTTOM
+        top = min(input_box[1], output_box[1]) + int(round(avg_height * top_scale))
+        bottom = min(input_box[1], output_box[1]) + int(round(avg_height * bottom_scale))
+        return cls._clip_box(
+            (
+                int(round(input_box[2] - max(4, (input_box[2] - input_box[0]) * 0.06))),
+                top,
+                int(round(output_box[0] + max(4, (output_box[2] - output_box[0]) * 0.06))),
+                bottom,
+            ),
+            card_size=(card_width, card_height),
+        )
+
+    @classmethod
+    def _localize_arrow_box(
+        cls,
+        card: Image.Image,
+        *,
+        search_box: tuple[int, int, int, int],
+    ) -> tuple[int, int, int, int] | None:
+        crop = card.crop(search_box).convert("RGB")
+        arr = np.asarray(crop, dtype=np.uint8)
+        if arr.size == 0:
+            return None
+        height, width = arr.shape[:2]
+        if width < 2 or height < 2:
+            return None
+
+        top = arr[0, :, :]
+        bottom = arr[-1, :, :]
+        left = arr[:, 0, :]
+        right = arr[:, -1, :]
+        border = np.concatenate((top, bottom, left, right), axis=0).astype(np.float32)
+        bg_rgb = np.median(border, axis=0)
+        diff = np.linalg.norm(arr.astype(np.float32) - bg_rgb[None, None, :], axis=2)
+        gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+        hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV)
+
+        mask = (
+            (diff >= _ARROW_TARGET_DIFF_MIN)
+            & (gray >= 60)
+            & (gray <= 230)
+            & (hsv[..., 1] <= 160)
+        ).astype(np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((2, 2), dtype=np.uint8))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8))
+        count, _labels, stats, centroids = cv2.connectedComponentsWithStats(mask, 8)
+
+        expected_center = (width / 2.0, height * 0.42)
+        best: tuple[float, tuple[int, int, int, int]] | None = None
+        for index in range(1, count):
+            x, y, comp_w, comp_h, area = (int(value) for value in stats[index])
+            if area < _ARROW_TARGET_MIN_AREA:
+                continue
+            if comp_w < 3 or comp_h < 3:
+                continue
+            if comp_w > int(round(width * 0.55)) or comp_h > int(round(height * 0.75)):
+                continue
+            fill_ratio = float(area) / float(max(1, comp_w * comp_h))
+            if fill_ratio < 0.08:
+                continue
+            aspect_ratio = float(comp_w) / float(max(1, comp_h))
+            if aspect_ratio < 0.22 or aspect_ratio > 2.6:
+                continue
+            cx, cy = (float(value) for value in centroids[index])
+            center_distance = float(np.hypot(cx - expected_center[0], cy - expected_center[1]))
+            score = float(area) + (fill_ratio * 24.0) - (center_distance * 1.1)
+            candidate = (
+                search_box[0] + max(0, x - 1),
+                search_box[1] + max(0, y - 1),
+                search_box[0] + min(width, x + comp_w + 1),
+                search_box[1] + min(height, y + comp_h + 1),
+            )
+            if best is None or score > best[0]:
+                best = (score, candidate)
+        if best is None:
+            return None
+        return cls._clip_box(best[1], card_size=card.size)
+
+    @classmethod
+    def _shift_box(
+        cls,
+        box: tuple[int, int, int, int],
+        *,
+        dx: float,
+        dy: float,
+        card_size: tuple[int, int],
+    ) -> tuple[int, int, int, int]:
+        return cls._clip_box(
+            (
+                int(round(box[0] + dx)),
+                int(round(box[1] + dy)),
+                int(round(box[2] + dx)),
+                int(round(box[3] + dy)),
+            ),
+            card_size=card_size,
+        )
+
+    @classmethod
+    def _derive_card_layout(
+        cls,
+        *,
+        card: Image.Image,
+        tab: str,
+    ) -> _ProductionCardLayout:
+        recipe_button_box = cls._detect_recipe_button_box(card)
+        if recipe_button_box is None:
+            raise ValueError("tooltip_card_anchor_unverified")
+        width, height = card.size
+
+        def _box(left: float, top: float, right: float, bottom: float) -> tuple[int, int, int, int]:
+            return cls._clip_box(
+                (
+                    int(round(width * left)),
+                    int(round(height * top)),
+                    int(round(width * right)),
+                    int(round(height * bottom)),
+                ),
+                card_size=(width, height),
+            )
+
+        progress_bar_box = _box(0.13, 0.49, 0.85, 0.62)
+        cancel_box = _box(0.77, 0.49, 0.94, 0.63)
+        if tab == "smelt":
+            input_icon_box = _box(0.06, 0.24, 0.29, 0.46)
+            output_icon_box = _box(0.50, 0.24, 0.76, 0.46)
+            extra_regions: tuple[_TooltipIconRegion, ...] = ()
+        else:
+            input_icon_box = _box(0.14, 0.31, 0.39, 0.56)
+            output_icon_box = _box(0.56, 0.25, 0.81, 0.49)
+            extra_regions = (_TooltipIconRegion(kind="ore", box=_box(0.18, 0.06, 0.40, 0.24)),)
+        arrow_search_box = cls._expected_arrow_search_box(
+            tab=tab,
+            input_box=input_icon_box,
+            output_box=output_icon_box,
+            card_size=(width, height),
+        )
+        localized_arrow_box = cls._localize_arrow_box(card, search_box=arrow_search_box)
+        return _ProductionCardLayout(
+            recipe_button_box=recipe_button_box,
+            input_icon_box=input_icon_box,
+            output_icon_box=output_icon_box,
+            progress_bar_box=progress_bar_box,
+            cancel_box=cancel_box,
+            extra_icon_regions=extra_regions,
+            arrow_search_box=arrow_search_box,
+            localized_arrow_box=localized_arrow_box,
+        )
+
+    @classmethod
+    def _tooltip_icon_regions_from_layout(
+        cls,
+        *,
+        tab: str,
+        layout: _ProductionCardLayout,
+    ) -> tuple[_TooltipIconRegion, ...]:
+        if tab == "smelt":
+            return (
+                _TooltipIconRegion(kind="bar", box=layout.output_icon_box),
+                _TooltipIconRegion(kind="ore", box=layout.input_icon_box),
+            )
+        return (
+            _TooltipIconRegion(kind="output", box=layout.output_icon_box),
+            _TooltipIconRegion(kind="bar", box=layout.input_icon_box),
+            *layout.extra_icon_regions,
+        )
+
+    @staticmethod
+    def _box_center(box: tuple[int, int, int, int]) -> tuple[float, float]:
+        x1, y1, x2, y2 = box
+        return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+
+    @classmethod
+    def _localize_target_box(
+        cls,
+        card: Image.Image,
+        *,
+        search_box: tuple[int, int, int, int],
+        kind: str,
+    ) -> tuple[int, int, int, int] | None:
+        crop = card.crop(search_box).convert("RGB")
+        arr = np.asarray(crop, dtype=np.uint8)
+        if arr.size == 0:
+            return None
+        height, width = arr.shape[:2]
+        if width < 2 or height < 2:
+            return None
+
+        top = arr[0, :, :]
+        bottom = arr[-1, :, :]
+        left = arr[:, 0, :]
+        right = arr[:, -1, :]
+        border = np.concatenate((top, bottom, left, right), axis=0).astype(np.float32)
+        bg_rgb = np.median(border, axis=0)
+        diff = np.linalg.norm(arr.astype(np.float32) - bg_rgb[None, None, :], axis=2)
+        gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+
+        if kind == "cancel":
+            bg_gray = float(np.median(cv2.cvtColor(border.reshape(-1, 1, 3).astype(np.uint8), cv2.COLOR_RGB2GRAY)))
+            mask = ((bg_gray - gray.astype(np.float32)) >= _CANCEL_TARGET_DARK_DELTA) | (diff >= (_LOCALIZED_TARGET_DIFF_MIN + 8.0))
+            min_area = max(_LOCALIZED_TARGET_MIN_AREA, int(round(width * height * 0.03)))
+            min_dim = max(6, int(round(min(width, height) * 0.18)))
+        else:
+            hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV)
+            mask = (diff >= _LOCALIZED_TARGET_DIFF_MIN) & ((gray >= 40) | (hsv[..., 1] >= 25))
+            min_area = max(_LOCALIZED_TARGET_MIN_AREA, int(round(width * height * 0.045)))
+            min_dim = max(8, int(round(min(width, height) * 0.20)))
+
+        mask_u8 = mask.astype(np.uint8)
+        mask_u8 = cv2.morphologyEx(mask_u8, cv2.MORPH_OPEN, np.ones((3, 3), dtype=np.uint8))
+        mask_u8 = cv2.morphologyEx(mask_u8, cv2.MORPH_CLOSE, np.ones((5, 5), dtype=np.uint8))
+        count, _labels, stats, centroids = cv2.connectedComponentsWithStats(mask_u8, 8)
+
+        if kind == "cancel":
+            expected_center = (width / 2.0, height / 2.0)
+        else:
+            expected_center = (width / 2.0, height * 0.42)
+        best: tuple[float, tuple[int, int, int, int]] | None = None
+        for index in range(1, count):
+            x, y, comp_w, comp_h, area = (int(value) for value in stats[index])
+            if area < min_area or comp_w < min_dim or comp_h < min_dim:
+                continue
+            fill_ratio = float(area) / float(max(1, comp_w * comp_h))
+            if fill_ratio < 0.18:
+                continue
+            cx, cy = (float(value) for value in centroids[index])
+            center_distance = float(np.hypot(cx - expected_center[0], cy - expected_center[1]))
+            score = float(area) + (fill_ratio * 30.0) - (center_distance * 1.2)
+            candidate = (
+                search_box[0] + max(0, x - _LOCALIZED_TARGET_EXPAND_PX),
+                search_box[1] + max(0, y - _LOCALIZED_TARGET_EXPAND_PX),
+                search_box[0] + min(width, x + comp_w + _LOCALIZED_TARGET_EXPAND_PX),
+                search_box[1] + min(height, y + comp_h + _LOCALIZED_TARGET_EXPAND_PX),
+            )
+            if best is None or score > best[0]:
+                best = (score, candidate)
+        if best is None:
+            return None
+        return cls._clip_box(best[1], card_size=card.size)
+
+    @classmethod
+    def _localized_tooltip_targets_from_layout(
+        cls,
+        *,
+        card: Image.Image,
+        tab: str,
+        layout: _ProductionCardLayout,
+    ) -> tuple[_LocalizedTooltipTarget, ...]:
+        regions = cls._tooltip_icon_regions_from_layout(tab=tab, layout=layout)
+        if layout.localized_arrow_box is not None and layout.arrow_search_box is not None:
+            rough_arrow_center = cls._box_center(layout.arrow_search_box)
+            localized_arrow_center = cls._box_center(layout.localized_arrow_box)
+            dx = localized_arrow_center[0] - rough_arrow_center[0]
+            dy = (localized_arrow_center[1] - rough_arrow_center[1]) * _ARROW_SHIFT_Y_SCALE
+            shifted_regions: list[_TooltipIconRegion] = []
+            for region in regions:
+                if region.kind == "ore" and tab != "smelt":
+                    shifted_regions.append(region)
+                    continue
+                shifted_regions.append(
+                    _TooltipIconRegion(
+                        kind=region.kind,
+                        box=cls._shift_box(region.box, dx=dx, dy=dy, card_size=card.size),
+                    )
+                )
+            regions = tuple(shifted_regions)
+
+        if tab == "smelt":
+            refined_regions: list[_TooltipIconRegion] = []
+            for region in regions:
+                if region.kind != "ore":
+                    refined_regions.append(region)
+                    continue
+                x1, y1, x2, y2 = region.box
+                box_width = max(1, x2 - x1)
+                box_height = max(1, y2 - y1)
+                shifted = cls._shift_box(
+                    region.box,
+                    dx=box_width * _SMELT_ORE_SEARCH_SHIFT_X,
+                    dy=box_height * _SMELT_ORE_SEARCH_SHIFT_Y,
+                    card_size=card.size,
+                )
+                sx1, sy1, sx2, sy2 = shifted
+                trimmed = cls._clip_box(
+                    (
+                        sx1,
+                        sy1,
+                        sx2,
+                        sy2 - int(round((sy2 - sy1) * _SMELT_ORE_SEARCH_BOTTOM_TRIM)),
+                    ),
+                    card_size=card.size,
+                )
+                refined_regions.append(_TooltipIconRegion(kind=region.kind, box=trimmed))
+            regions = tuple(refined_regions)
+
+        targets = [
+            _LocalizedTooltipTarget(
+                kind=region.kind,
+                search_box=region.box,
+                localized_box=cls._localize_target_box(card, search_box=region.box, kind=region.kind),
+            )
+            for region in regions
+        ]
+
+        if tab == "smelt":
+            bar_target = next((target for target in targets if target.kind == "bar" and target.localized_box is not None), None)
+            if bar_target is not None:
+                estimated_ore_search_box = cls._estimate_smelt_ore_search_box_from_bar(
+                    bar_box=bar_target.localized_box,
+                    card_size=card.size,
+                )
+                targets = [
+                    _LocalizedTooltipTarget(
+                        kind=target.kind,
+                        search_box=estimated_ore_search_box,
+                        localized_box=target.localized_box,
+                    )
+                    if target.kind == "ore" and target.localized_box is None
+                    else target
+                    for target in targets
+                ]
+
+        return tuple(targets)
+
+    @classmethod
+    def _estimate_smelt_ore_search_box_from_bar(
+        cls,
+        *,
+        bar_box: tuple[int, int, int, int],
+        card_size: tuple[int, int],
+    ) -> tuple[int, int, int, int]:
+        card_width, card_height = card_size
+        bar_center_x, bar_center_y = cls._box_center(bar_box)
+        box_width = max(1, int(round(card_width * _SMELT_ICON_ESTIMATED_BOX_WIDTH)))
+        box_height = max(1, int(round(card_height * _SMELT_ICON_ESTIMATED_BOX_HEIGHT)))
+        ore_center_x = bar_center_x - (card_width * _SMELT_ICON_CENTER_X_SEPARATION)
+        ore_center_y = bar_center_y
+        return cls._clip_box(
+            (
+                int(round(ore_center_x - (box_width / 2.0))),
+                int(round(ore_center_y - (box_height / 2.0))),
+                int(round(ore_center_x + (box_width / 2.0))),
+                int(round(ore_center_y + (box_height / 2.0))),
+            ),
+            card_size=(card_width, card_height),
+        )
+
+    @staticmethod
     def _tooltip_probe_points(icon_box: tuple[int, int, int, int]) -> tuple[tuple[int, int], ...]:
         return tuple(spec.point for spec in ProductionOverviewReader._tooltip_probe_point_specs(icon_box))
+
+    @staticmethod
+    def _tooltip_probe_box_for_target(
+        *,
+        tab: str,
+        target: _LocalizedTooltipTarget,
+    ) -> tuple[int, int, int, int] | None:
+        if target.localized_box is not None:
+            return target.localized_box
+        if tab == "smelt" and target.kind == "ore":
+            return target.search_box
+        return None
 
     @staticmethod
     def _tooltip_probe_point_specs(icon_box: tuple[int, int, int, int]) -> tuple[_TooltipProbePoint, ...]:
@@ -382,9 +850,12 @@ class ProductionOverviewReader:
             clipped_bottom = max(clipped_top + 1, min(card_height, int(bottom)))
             return (clipped_left, clipped_top, clipped_right, clipped_bottom)
 
-        region_width = max(icon_width + 1, int(round(icon_width * _TOOLTIP_SEARCH_RIGHT_EXTENT)))
-        region_height = max(icon_height + 1, int(round(icon_height * (_TOOLTIP_SEARCH_TOP_FROM_CENTER + _TOOLTIP_SEARCH_BOTTOM_FROM_CENTER))))
-        left = int(round(x2 - (icon_width * _TOOLTIP_SEARCH_OVERLAP_X)))
+        region_width = max(icon_width + 1, int(round(icon_width * (_TOOLTIP_SEARCH_LEFT_FROM_ICON + _TOOLTIP_SEARCH_RIGHT_EXTENT))))
+        region_height = max(
+            icon_height + 1,
+            int(round(icon_height * (_TOOLTIP_SEARCH_TOP_FROM_CENTER + _TOOLTIP_SEARCH_BOTTOM_FROM_CENTER))),
+        )
+        left = int(round(x1 - (icon_width * _TOOLTIP_SEARCH_LEFT_FROM_ICON)))
         top = int(round(center_y - (icon_height * _TOOLTIP_SEARCH_TOP_FROM_CENTER)))
         right = left + region_width
         bottom = top + region_height
@@ -471,12 +942,38 @@ class ProductionOverviewReader:
         return lookup
 
     @classmethod
-    def _match_tooltip_label(cls, text: str | None) -> str | None:
+    def _extract_tooltip_label_matches(cls, text: str | None) -> tuple[str, ...]:
         normalized = cls._normalize_tooltip_text(text)
         if not normalized:
-            return None
+            return ()
+        compact = normalized.replace(" ", "")
         lookup = cls._known_tooltip_labels()
-        return lookup.get(normalized) or lookup.get(normalized.replace(" ", ""))
+        exact_match = lookup.get(normalized) or lookup.get(compact)
+        if exact_match is not None:
+            return (exact_match,)
+
+        matched_lengths: dict[str, int] = {}
+        for alias, canonical in lookup.items():
+            if not alias:
+                continue
+            alias_compact = alias.replace(" ", "")
+            contains = alias in normalized if " " in alias else alias_compact in compact
+            if not contains:
+                continue
+            matched_lengths[canonical] = max(matched_lengths.get(canonical, 0), len(alias_compact))
+
+        if not matched_lengths:
+            return ()
+        strongest = max(matched_lengths.values())
+        matches = sorted(canonical for canonical, length in matched_lengths.items() if length == strongest)
+        return tuple(matches)
+
+    @classmethod
+    def _match_tooltip_label(cls, text: str | None) -> str | None:
+        matches = cls._extract_tooltip_label_matches(text)
+        if len(matches) != 1:
+            return None
+        return matches[0]
 
     def _resolve_smelt_tooltip_output(self, *, tooltip_label: str, templates: dict[str, Image.Image]) -> str | None:
         if self._lookup_template(templates, tooltip_label) is not None:
@@ -505,8 +1002,15 @@ class ProductionOverviewReader:
         if rect is None:
             raise ValueError(f"missing_rect:{rect_key}")
         card_x, card_y, card_w, card_h = rect
-        for region in self._tooltip_icon_regions(tab=tab, card_size=(card_w, card_h)):
-            for probe in self._tooltip_probe_point_specs(region.box):
+        card = self._capture_rect(rect_key)
+        if card is None:
+            raise ValueError(f"missing_rect:{rect_key}")
+        layout = self._derive_card_layout(card=card, tab=tab)
+        for target in self._localized_tooltip_targets_from_layout(card=card, tab=tab, layout=layout):
+            probe_box = self._tooltip_probe_box_for_target(tab=tab, target=target)
+            if probe_box is None:
+                continue
+            for probe in self._tooltip_probe_point_specs(probe_box):
                 point = probe.point
                 global_point = (int(card_x + point[0]), int(card_y + point[1]))
                 if not self.actions.click_client_point(global_point, delay=self._scroll_delay_seconds()):
@@ -514,7 +1018,7 @@ class ProductionOverviewReader:
                 frame = self._capture_screen()
                 if frame is None:
                     raise ValueError("tooltip_probe_capture_unavailable")
-                for crop_candidate in self._tooltip_crop_candidates(region.box, card_size=(card_w, card_h)):
+                for crop_candidate in self._tooltip_crop_candidates(probe_box, card_size=(card_w, card_h)):
                     crop_box = crop_candidate.box
                     tooltip = frame.crop(
                         (
@@ -525,14 +1029,15 @@ class ProductionOverviewReader:
                         )
                     )
                     result = self.perception.read_text(tooltip, prompt=_TOOLTIP_PROMPT, mode="generic")
-                    matched_label = self._match_tooltip_label(getattr(result, "value", ""))
-                    if matched_label is None:
+                    matched_labels = self._extract_tooltip_label_matches(getattr(result, "value", ""))
+                    if len(matched_labels) != 1:
                         continue
+                    matched_label = matched_labels[0]
                     if tab != "smelt":
-                        return matched_label, f"tooltip_probe_{region.kind}_{getattr(result, 'backend', '') or 'generic'}"
+                        return matched_label, f"tooltip_probe_{target.kind}_{getattr(result, 'backend', '') or 'generic'}"
                     output_name = self._resolve_smelt_tooltip_output(tooltip_label=matched_label, templates=templates)
                     if output_name is not None:
-                        return output_name, f"tooltip_probe_{region.kind}_{getattr(result, 'backend', '') or 'generic'}"
+                        return output_name, f"tooltip_probe_{target.kind}_{getattr(result, 'backend', '') or 'generic'}"
         raise ValueError("tooltip_probe_no_valid_label")
 
     @staticmethod
@@ -546,25 +1051,50 @@ class ProductionOverviewReader:
         draw.line((x, y - 8, x, y + 8), fill=color, width=2)
 
     @classmethod
+    def _draw_probe_marker(
+        cls,
+        draw: ImageDraw.ImageDraw,
+        point: tuple[int, int],
+        *,
+        color: str,
+        marker_label: str,
+    ) -> None:
+        x, y = point
+        draw.ellipse((x - 5, y - 5, x + 5, y + 5), fill=color, outline="#08121f", width=1)
+        cls._draw_crosshair(draw, point, color=color)
+        text_origin = (x + 10, max(4, y - 10))
+        text_width = max(26, (len(marker_label) * 7) + 4)
+        draw.rectangle(
+            (text_origin[0] - 2, text_origin[1] - 2, text_origin[0] + text_width, text_origin[1] + 14),
+            fill="#08121f",
+        )
+        draw.text(text_origin, marker_label, fill=color)
+
+    @classmethod
     def _render_tooltip_probe_audit_overlay(
         cls,
         *,
         frame: Image.Image,
         card_rect: tuple[int, int, int, int],
-        icon_box: tuple[int, int, int, int],
+        layout: _ProductionCardLayout,
+        search_box: tuple[int, int, int, int],
+        localized_box: tuple[int, int, int, int] | None,
         probe_point: tuple[int, int],
         tooltip_crop_box: tuple[int, int, int, int],
         label: str,
+        probe_markers: tuple[_TooltipProbeMarker, ...] = (),
+        localized_targets: tuple[_LocalizedTooltipTarget, ...] = (),
+        localized_cancel_box: tuple[int, int, int, int] | None = None,
     ) -> Image.Image:
         annotated = frame.convert("RGB").copy()
         draw = ImageDraw.Draw(annotated)
         card_x, card_y, card_w, card_h = card_rect
         card_box = (card_x, card_y, card_x + card_w, card_y + card_h)
-        icon_rect = (
-            card_x + icon_box[0],
-            card_y + icon_box[1],
-            card_x + icon_box[2],
-            card_y + icon_box[3],
+        search_rect = (
+            card_x + search_box[0],
+            card_y + search_box[1],
+            card_x + search_box[2],
+            card_y + search_box[3],
         )
         crop_rect = (
             card_x + tooltip_crop_box[0],
@@ -572,10 +1102,141 @@ class ProductionOverviewReader:
             card_x + tooltip_crop_box[2],
             card_y + tooltip_crop_box[3],
         )
+        recipe_rect = (
+            card_x + layout.recipe_button_box[0],
+            card_y + layout.recipe_button_box[1],
+            card_x + layout.recipe_button_box[2],
+            card_y + layout.recipe_button_box[3],
+        )
+        progress_rect = (
+            card_x + layout.progress_bar_box[0],
+            card_y + layout.progress_bar_box[1],
+            card_x + layout.progress_bar_box[2],
+            card_y + layout.progress_bar_box[3],
+        )
+        cancel_rect = (
+            card_x + layout.cancel_box[0],
+            card_y + layout.cancel_box[1],
+            card_x + layout.cancel_box[2],
+            card_y + layout.cancel_box[3],
+        )
         draw.rectangle(card_box, outline="#00e5ff", width=3)
-        draw.rectangle(icon_rect, outline="#ffd400", width=3)
+        draw.rectangle(recipe_rect, outline="#00ffcc", width=3)
+        if layout.arrow_search_box is not None:
+            draw.rectangle(
+                (
+                    card_x + layout.arrow_search_box[0],
+                    card_y + layout.arrow_search_box[1],
+                    card_x + layout.arrow_search_box[2],
+                    card_y + layout.arrow_search_box[3],
+                ),
+                outline="#c77dff",
+                width=2,
+            )
+        if layout.localized_arrow_box is not None:
+            draw.rectangle(
+                (
+                    card_x + layout.localized_arrow_box[0],
+                    card_y + layout.localized_arrow_box[1],
+                    card_x + layout.localized_arrow_box[2],
+                    card_y + layout.localized_arrow_box[3],
+                ),
+                outline="#ff5cff",
+                width=3,
+            )
+        draw.rectangle(progress_rect, outline="#7dff6f", width=2)
+        draw.rectangle(cancel_rect, outline="#ff3b30", width=2)
+        if localized_targets:
+            for target in localized_targets:
+                draw.rectangle(
+                    (
+                        card_x + target.search_box[0],
+                        card_y + target.search_box[1],
+                        card_x + target.search_box[2],
+                        card_y + target.search_box[3],
+                    ),
+                    outline="#ffe066",
+                    width=2,
+                )
+        else:
+            draw.rectangle(
+                (
+                    card_x + layout.input_icon_box[0],
+                    card_y + layout.input_icon_box[1],
+                    card_x + layout.input_icon_box[2],
+                    card_y + layout.input_icon_box[3],
+                ),
+                outline="#ffd400",
+                width=2,
+            )
+            draw.rectangle(
+                (
+                    card_x + layout.output_icon_box[0],
+                    card_y + layout.output_icon_box[1],
+                    card_x + layout.output_icon_box[2],
+                    card_y + layout.output_icon_box[3],
+                ),
+                outline="#ff9f0a",
+                width=2,
+            )
+            for extra_region in layout.extra_icon_regions:
+                draw.rectangle(
+                    (
+                        card_x + extra_region.box[0],
+                        card_y + extra_region.box[1],
+                        card_x + extra_region.box[2],
+                        card_y + extra_region.box[3],
+                    ),
+                    outline="#c77dff",
+                    width=2,
+                )
+        if localized_cancel_box is not None:
+            draw.rectangle(
+                (
+                    card_x + localized_cancel_box[0],
+                    card_y + localized_cancel_box[1],
+                    card_x + localized_cancel_box[2],
+                    card_y + localized_cancel_box[3],
+                ),
+                outline="#ff66b3",
+                width=3,
+            )
+        for target in localized_targets:
+            if target.localized_box is None:
+                continue
+            draw.rectangle(
+                (
+                    card_x + target.localized_box[0],
+                    card_y + target.localized_box[1],
+                    card_x + target.localized_box[2],
+                    card_y + target.localized_box[3],
+                ),
+                outline="#6aff6a",
+                width=2,
+            )
+        draw.rectangle(search_rect, outline="#ffe066", width=3)
+        if localized_box is not None:
+            draw.rectangle(
+                (
+                    card_x + localized_box[0],
+                    card_y + localized_box[1],
+                    card_x + localized_box[2],
+                    card_y + localized_box[3],
+                ),
+                outline="#3ddcff",
+                width=3,
+            )
         draw.rectangle(crop_rect, outline="#00ff66", width=2)
-        cls._draw_crosshair(draw, (card_x + probe_point[0], card_y + probe_point[1]), color="#ff3b30")
+        if probe_markers:
+            for marker in probe_markers:
+                cls._draw_probe_marker(
+                    draw,
+                    (card_x + marker.point[0], card_y + marker.point[1]),
+                    color=marker.color,
+                    marker_label=marker.marker_label,
+                )
+        else:
+            cls._draw_crosshair(draw, (card_x + probe_point[0], card_y + probe_point[1]), color="#ff3b30")
         text_origin = (max(4, card_x), max(4, card_y - 18))
         draw.rectangle((text_origin[0] - 2, text_origin[1] - 2, text_origin[0] + (len(label) * 7), text_origin[1] + 14), fill="#08121f")
         draw.text(text_origin, label, fill="#ffffff")
@@ -592,32 +1253,55 @@ class ProductionOverviewReader:
         if rect is None:
             raise ValueError(f"missing_rect:{rect_key}")
         card_x, card_y, card_w, card_h = rect
+        card = self._capture_rect(rect_key)
+        if card is None:
+            raise ValueError(f"missing_rect:{rect_key}")
+        layout = self._derive_card_layout(card=card, tab=tab)
+        localized_targets = self._localized_tooltip_targets_from_layout(card=card, tab=tab, layout=layout)
+        localized_cancel_box = self._localize_target_box(card, search_box=layout.cancel_box, kind="cancel")
         output_root = Path(output_dir)
         output_root.mkdir(parents=True, exist_ok=True)
         attempts: list[dict[str, str | tuple[int, int] | tuple[int, int, int, int] | bool | None]] = []
-        for region in self._tooltip_icon_regions(tab=tab, card_size=(card_w, card_h)):
-            for probe in self._tooltip_probe_point_specs(region.box):
+        for target in localized_targets:
+            probe_box = self._tooltip_probe_box_for_target(tab=tab, target=target)
+            if probe_box is None:
+                continue
+            region_markers: list[_TooltipProbeMarker] = []
+            for probe in self._tooltip_probe_point_specs(probe_box):
                 global_point = (int(card_x + probe.point[0]), int(card_y + probe.point[1]))
                 click_ok = bool(self.actions.click_client_point(global_point, delay=self._scroll_delay_seconds()))
                 frame = self._capture_screen()
                 if frame is None:
                     raise ValueError("tooltip_probe_capture_unavailable")
-                for crop_candidate in self._tooltip_crop_candidates(region.box, card_size=(card_w, card_h)):
+                marker_label = f"{target.kind}_{probe.point_id}_{len(region_markers) + 1}"
+                region_markers.append(
+                    _TooltipProbeMarker(
+                        point=probe.point,
+                        marker_label=marker_label,
+                        color="#ffd400" if len(region_markers) == 0 else "#ff9f0a",
+                    )
+                )
+                for crop_candidate in self._tooltip_crop_candidates(probe_box, card_size=(card_w, card_h)):
                     crop_box = crop_candidate.box
                     label = self._tooltip_probe_artifact_label(
                         tab=tab,
                         rect_key=rect_key,
-                        icon_kind=region.kind,
+                        icon_kind=target.kind,
                         point_id=probe.point_id,
                         crop_id=crop_candidate.crop_id,
                     )
                     overlay = self._render_tooltip_probe_audit_overlay(
                         frame=frame,
                         card_rect=rect,
-                        icon_box=region.box,
+                        layout=layout,
+                        search_box=target.search_box,
+                        localized_box=target.localized_box,
                         probe_point=probe.point,
                         tooltip_crop_box=crop_box,
                         label=label,
+                        probe_markers=tuple(region_markers),
+                        localized_targets=localized_targets,
+                        localized_cancel_box=localized_cancel_box,
                     )
                     overlay_path = output_root / f"{label}_overlay.png"
                     tooltip_path = output_root / f"{label}_tooltip.png"
@@ -636,14 +1320,32 @@ class ProductionOverviewReader:
                             "label": label,
                             "tab": tab,
                             "rect_key": rect_key,
-                            "icon_kind": region.kind,
+                            "icon_kind": target.kind,
                             "point_id": probe.point_id,
                             "crop_id": crop_candidate.crop_id,
                             "probe_point": probe.point,
                             "global_point": global_point,
-                            "icon_box": region.box,
+                            "recipe_button_box": layout.recipe_button_box,
+                            "input_icon_box": layout.input_icon_box,
+                            "output_icon_box": layout.output_icon_box,
+                            "arrow_search_box": layout.arrow_search_box,
+                            "localized_arrow_box": layout.localized_arrow_box,
+                            "progress_bar_box": layout.progress_bar_box,
+                            "cancel_box": layout.cancel_box,
+                            "search_box": target.search_box,
+                            "localized_box": target.localized_box,
+                            "localized_cancel_box": localized_cancel_box,
+                            "icon_box": target.search_box,
                             "tooltip_crop_box": crop_box,
                             "click_ok": click_ok,
+                            "probe_markers": tuple(
+                                {
+                                    "point": marker.point,
+                                    "marker_label": marker.marker_label,
+                                    "color": marker.color,
+                                }
+                                for marker in region_markers
+                            ),
                             "overlay_artifact": str(overlay_path),
                             "tooltip_artifact": str(tooltip_path),
                         }

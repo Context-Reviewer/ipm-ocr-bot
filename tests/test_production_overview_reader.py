@@ -1,8 +1,16 @@
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageDraw
 import pytest
 
-from ipm.readers.production_overview import ProductionOverviewReader
+from ipm.readers.production_overview import (
+    _LocalizedTooltipTarget,
+    ProductionOverviewReader,
+    _ProductionCardLayout,
+    _TooltipCropCandidate,
+    _TooltipIconRegion,
+    _TooltipProbeMarker,
+    _TooltipProbePoint,
+)
 
 
 class _FakePerception:
@@ -580,21 +588,325 @@ def test_production_overview_reader_generates_named_tooltip_probe_points():
 def test_production_overview_reader_computes_local_tooltip_crop_box():
     crop_box = ProductionOverviewReader._tooltip_crop_box((60, 80, 95, 120), card_size=(240, 295))
 
-    assert crop_box == (92, 76, 197, 117)
+    assert crop_box == (48, 56, 211, 140)
 
 
 def test_production_overview_reader_derives_tooltip_search_region_from_icon_bounds():
     search_region = ProductionOverviewReader._tooltip_search_region((60, 80, 95, 120), card_size=(240, 295))
 
-    assert search_region == (92, 76, 197, 117)
+    assert search_region == (48, 56, 211, 140)
 
 
 def test_production_overview_reader_wraps_search_region_as_single_candidate():
     candidates = ProductionOverviewReader._tooltip_crop_candidates((60, 80, 95, 120), card_size=(240, 295))
 
     assert [(candidate.crop_id, candidate.box) for candidate in candidates] == [
-        ("search_region", (92, 76, 197, 117)),
+        ("search_region", (48, 56, 211, 140)),
     ]
+
+
+def test_production_overview_reader_extracts_known_name_from_noisy_ocr_text():
+    matches = ProductionOverviewReader._extract_tooltip_label_matches("Lead 40/1.00K 59")
+
+    assert matches == ("Lead",)
+
+
+def test_production_overview_reader_prefers_stronger_known_name_match_from_noisy_ocr_text():
+    matches = ProductionOverviewReader._extract_tooltip_label_matches("Copper Bar Production")
+
+    assert matches == ("Copper Bar",)
+
+
+def test_production_overview_reader_extracts_item_name_from_broader_noisy_ocr_text():
+    matches = ProductionOverviewReader._extract_tooltip_label_matches("Battery Build Crafter")
+
+    assert matches == ("Battery",)
+
+
+def test_production_overview_reader_rejects_conflicting_noisy_ocr_names():
+    matches = ProductionOverviewReader._extract_tooltip_label_matches("Lead Iron")
+
+    assert matches == ("Iron", "Lead")
+
+
+def test_production_overview_reader_localizes_tighter_icon_box_inside_search_window():
+    card = Image.new("RGB", (240, 295), "#173650")
+    draw = ImageDraw.Draw(card)
+    draw.rectangle((22, 82, 57, 118), fill="#f2c94c")
+    search_box = (10, 70, 80, 140)
+
+    localized = ProductionOverviewReader._localize_target_box(card, search_box=search_box, kind="ore")
+
+    assert localized is not None
+    assert localized != search_box
+    assert localized[0] > search_box[0]
+    assert localized[1] > search_box[1]
+    assert localized[2] < search_box[2]
+    assert localized[3] < search_box[3]
+    center_x, center_y = ProductionOverviewReader._box_center(localized)
+    assert 34.0 <= center_x <= 46.0
+    assert 92.0 <= center_y <= 108.0
+
+
+def test_production_overview_reader_localizes_small_smelt_arrow_contour():
+    card = Image.new("RGB", (240, 295), "#173650")
+    draw = ImageDraw.Draw(card)
+    draw.line((94, 86, 101, 92), fill="#c7d0df", width=2)
+    draw.line((101, 92, 94, 98), fill="#c7d0df", width=2)
+
+    localized = ProductionOverviewReader._localize_arrow_box(card, search_box=(66, 71, 124, 103))
+
+    assert localized is not None
+    center_x, center_y = ProductionOverviewReader._box_center(localized)
+    assert 92.0 <= center_x <= 103.0
+    assert 86.0 <= center_y <= 98.0
+
+
+def test_production_overview_reader_derives_card_regions_from_recipe_anchor(monkeypatch):
+    reader = ProductionOverviewReader(
+        rects=None,
+        capture=None,
+        actions=None,
+        perception=_FakePerception(),
+    )
+    card = Image.new("RGB", (240, 295), "#112244")
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_detect_recipe_button_box",
+        classmethod(lambda cls, image: (56, 226, 163, 271)),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_localize_arrow_box",
+        classmethod(lambda cls, image, *, search_box: (90, 84, 102, 96)),
+    )
+
+    layout = reader._derive_card_layout(card=card, tab="smelt")
+
+    assert layout.recipe_button_box == (56, 226, 163, 271)
+    assert layout.input_icon_box == (14, 71, 70, 136)
+    assert layout.output_icon_box == (120, 71, 182, 136)
+    assert layout.arrow_search_box == (66, 71, 124, 103)
+    assert layout.localized_arrow_box == (90, 84, 102, 96)
+    assert layout.progress_bar_box == (31, 145, 204, 183)
+    assert layout.cancel_box == (185, 145, 226, 186)
+
+
+def test_production_overview_reader_generates_regions_from_card_layout(monkeypatch):
+    reader = ProductionOverviewReader(
+        rects=None,
+        capture=None,
+        actions=None,
+        perception=_FakePerception(),
+    )
+    card = Image.new("RGB", (240, 295), "#112244")
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_detect_recipe_button_box",
+        classmethod(lambda cls, image: (56, 226, 163, 271)),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_localize_arrow_box",
+        classmethod(lambda cls, image, *, search_box: (103, 88, 115, 100)),
+    )
+
+    layout = reader._derive_card_layout(card=card, tab="craft")
+    regions = reader._tooltip_icon_regions_from_layout(tab="craft", layout=layout)
+
+    assert [(region.kind, region.box) for region in regions] == [
+        ("output", (134, 74, 194, 145)),
+        ("bar", (34, 91, 94, 165)),
+        ("ore", (43, 18, 96, 71)),
+    ]
+
+
+def test_production_overview_reader_attempts_arrow_localization_in_bounded_center_region(monkeypatch):
+    reader = ProductionOverviewReader(
+        rects=None,
+        capture=None,
+        actions=None,
+        perception=_FakePerception(),
+    )
+    card = Image.new("RGB", (240, 295), "#112244")
+    seen = []
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_detect_recipe_button_box",
+        classmethod(lambda cls, image: (56, 226, 163, 271)),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_localize_arrow_box",
+        classmethod(lambda cls, image, *, search_box: seen.append(search_box) or (90, 84, 102, 96)),
+    )
+
+    layout = reader._derive_card_layout(card=card, tab="smelt")
+
+    assert seen == [(66, 71, 124, 103)]
+    assert layout.arrow_search_box == (66, 71, 124, 103)
+    assert layout.localized_arrow_box == (90, 84, 102, 96)
+
+
+def test_production_overview_reader_returns_search_window_and_localized_box_separately(monkeypatch):
+    reader = ProductionOverviewReader(
+        rects=None,
+        capture=None,
+        actions=None,
+        perception=_FakePerception(),
+    )
+    card = Image.new("RGB", (240, 295), "#112244")
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_detect_recipe_button_box",
+        classmethod(lambda cls, image: (56, 226, 163, 271)),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_localize_arrow_box",
+        classmethod(lambda cls, image, *, search_box: (104, 84, 116, 96)),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_localize_target_box",
+        classmethod(
+            lambda cls, image, *, search_box, kind: (
+                search_box[0] + 5,
+                search_box[1] + 6,
+                search_box[2] - 7,
+                search_box[3] - 8,
+            )
+        ),
+    )
+
+    layout = reader._derive_card_layout(card=card, tab="smelt")
+    targets = reader._localized_tooltip_targets_from_layout(card=card, tab="smelt", layout=layout)
+
+    assert [(target.kind, target.search_box, target.localized_box) for target in targets] == [
+        ("bar", (135, 72, 197, 137), (140, 78, 190, 129)),
+        ("ore", (37, 69, 93, 116), (42, 75, 86, 108)),
+    ]
+
+
+def test_production_overview_reader_falls_back_to_layout_windows_when_arrow_missing(monkeypatch):
+    reader = ProductionOverviewReader(
+        rects=None,
+        capture=None,
+        actions=None,
+        perception=_FakePerception(),
+    )
+    card = Image.new("RGB", (240, 295), "#112244")
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_detect_recipe_button_box",
+        classmethod(lambda cls, image: (56, 226, 163, 271)),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_localize_arrow_box",
+        classmethod(lambda cls, image, *, search_box: None),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_localize_target_box",
+        classmethod(lambda cls, image, *, search_box, kind: search_box),
+    )
+
+    layout = reader._derive_card_layout(card=card, tab="smelt")
+    targets = reader._localized_tooltip_targets_from_layout(card=card, tab="smelt", layout=layout)
+
+    assert [(target.kind, target.search_box) for target in targets] == [
+        ("bar", (120, 71, 182, 136)),
+        ("ore", (22, 68, 78, 115)),
+    ]
+
+
+def test_production_overview_reader_estimates_smelt_ore_window_from_bar_when_ore_missing(monkeypatch):
+    reader = ProductionOverviewReader(
+        rects=None,
+        capture=None,
+        actions=None,
+        perception=_FakePerception(),
+    )
+    card = Image.new("RGB", (240, 295), "#112244")
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_detect_recipe_button_box",
+        classmethod(lambda cls, image: (56, 226, 163, 271)),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_localize_arrow_box",
+        classmethod(lambda cls, image, *, search_box: None),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_localize_target_box",
+        classmethod(
+            lambda cls, image, *, search_box, kind: (156, 118, 182, 136) if kind == "bar" else None
+        ),
+    )
+
+    layout = reader._derive_card_layout(card=card, tab="smelt")
+    targets = reader._localized_tooltip_targets_from_layout(card=card, tab="smelt", layout=layout)
+
+    assert [(target.kind, target.search_box, target.localized_box) for target in targets] == [
+        ("bar", (120, 71, 182, 136), (156, 118, 182, 136)),
+        ("ore", (26, 104, 81, 150), None),
+    ]
+
+
+def test_production_overview_reader_uses_localized_icon_center_after_arrow_shift(monkeypatch):
+    card = Image.new("RGB", (240, 295), "#112244")
+    frame = Image.new("RGB", (240, 295), "#223355")
+    requested_probe_boxes = []
+
+    class _TooltipPerception:
+        def read_text(self, image, *, prompt, mode):
+            _ = image, prompt, mode
+            return type("Result", (), {"value": "Lead", "backend": "fake"})()
+
+    reader = ProductionOverviewReader(
+        rects=_FakeRects(),
+        capture=_FakeCapture([card], screen_frames=[frame]),
+        actions=_FakeActions(),
+        perception=_TooltipPerception(),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_detect_recipe_button_box",
+        classmethod(lambda cls, image: (56, 226, 163, 271)),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_localize_arrow_box",
+        classmethod(lambda cls, image, *, search_box: (104, 84, 116, 96)),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_localize_target_box",
+        classmethod(
+            lambda cls, image, *, search_box, kind: (140, 76, 190, 127) if kind == "bar" else None
+        ),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_tooltip_probe_point_specs",
+        classmethod(
+            lambda cls, icon_box: requested_probe_boxes.append(icon_box)
+            or (_TooltipProbePoint(point_id="center", point=(165, 102)),)
+        ),
+    )
+
+    output_name, backend = reader._probe_tooltip_identity(
+        rect_key="PRODUCTION_CARD1",
+        tab="smelt",
+        templates={"Lead Bar": Image.new("RGB", (10, 10), "gray")},
+    )
+
+    assert output_name == "Lead Bar"
+    assert backend == "tooltip_probe_bar_fake"
+    assert requested_probe_boxes == [(140, 76, 190, 127)]
 
 
 def test_production_overview_reader_stops_on_first_valid_tooltip_label(monkeypatch):
@@ -616,6 +928,20 @@ def test_production_overview_reader_stops_on_first_valid_tooltip_label(monkeypat
         capture=_FakeCapture([card], screen_frames=[frame, frame, frame]),
         actions=_FakeActions(),
         perception=_TooltipPerception(),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_detect_recipe_button_box",
+        classmethod(lambda cls, image: (56, 226, 163, 271)),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_localized_tooltip_targets_from_layout",
+        classmethod(
+            lambda cls, *, card, tab, layout: (
+                _LocalizedTooltipTarget(kind="bar", search_box=(120, 71, 182, 136), localized_box=(130, 80, 170, 120)),
+            )
+        ),
     )
 
     output_name, backend = reader._probe_tooltip_identity(
@@ -654,8 +980,17 @@ def test_production_overview_reader_stops_on_first_valid_tooltip_probe(monkeypat
     )
     monkeypatch.setattr(
         ProductionOverviewReader,
-        "_tooltip_icon_regions",
-        staticmethod(lambda *, tab, card_size: (type("Region", (), {"kind": "bar", "box": (120, 71, 182, 136)})(),)),
+        "_detect_recipe_button_box",
+        classmethod(lambda cls, image: (56, 226, 163, 271)),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_localized_tooltip_targets_from_layout",
+        classmethod(
+            lambda cls, *, card, tab, layout: (
+                _LocalizedTooltipTarget(kind="bar", search_box=(120, 71, 182, 136), localized_box=(130, 80, 170, 120)),
+            )
+        ),
     )
 
     output_name, backend = reader._probe_tooltip_identity(
@@ -666,7 +1001,7 @@ def test_production_overview_reader_stops_on_first_valid_tooltip_probe(monkeypat
 
     assert output_name == "Lead Bar"
     assert backend == "tooltip_probe_bar_fake"
-    assert crop_sequence == [(186, 66), (186, 66)]
+    assert crop_sequence == [(186, 84), (186, 84)]
 
 
 def test_production_overview_reader_rejects_invalid_tooltip_text():
@@ -684,13 +1019,31 @@ def test_production_overview_reader_rejects_invalid_tooltip_text():
         actions=_FakeActions(),
         perception=_TooltipPerception(),
     )
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_detect_recipe_button_box",
+        classmethod(lambda cls, image: (56, 226, 163, 271)),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_localized_tooltip_targets_from_layout",
+        classmethod(
+            lambda cls, *, card, tab, layout: (
+                _LocalizedTooltipTarget(kind="bar", search_box=(120, 71, 182, 136), localized_box=(130, 80, 170, 120)),
+            )
+        ),
+    )
 
-    with pytest.raises(ValueError, match="tooltip_probe_no_valid_label"):
-        reader._probe_tooltip_identity(
-            rect_key="PRODUCTION_CARD1",
-            tab="smelt",
-            templates={"Lead Bar": Image.new("RGB", (10, 10), "gray")},
-        )
+    try:
+        with pytest.raises(ValueError, match="tooltip_probe_no_valid_label"):
+            reader._probe_tooltip_identity(
+                rect_key="PRODUCTION_CARD1",
+                tab="smelt",
+                templates={"Lead Bar": Image.new("RGB", (10, 10), "gray")},
+            )
+    finally:
+        monkeypatch.undo()
 
 
 def test_production_overview_reader_rejects_invalid_tooltip_text_across_all_crops(monkeypatch):
@@ -714,8 +1067,17 @@ def test_production_overview_reader_rejects_invalid_tooltip_text_across_all_crop
     )
     monkeypatch.setattr(
         ProductionOverviewReader,
-        "_tooltip_icon_regions",
-        staticmethod(lambda *, tab, card_size: (type("Region", (), {"kind": "bar", "box": (120, 71, 182, 136)})(),)),
+        "_detect_recipe_button_box",
+        classmethod(lambda cls, image: (56, 226, 163, 271)),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_localized_tooltip_targets_from_layout",
+        classmethod(
+            lambda cls, *, card, tab, layout: (
+                _LocalizedTooltipTarget(kind="bar", search_box=(120, 71, 182, 136), localized_box=(130, 80, 170, 120)),
+            )
+        ),
     )
 
     with pytest.raises(ValueError, match="tooltip_probe_no_valid_label"):
@@ -728,7 +1090,7 @@ def test_production_overview_reader_rejects_invalid_tooltip_text_across_all_crop
     assert reader.perception.calls == 3
 
 
-def test_production_overview_reader_fails_closed_without_screen_capture():
+def test_production_overview_reader_fails_closed_without_screen_capture(monkeypatch):
     card = Image.new("RGB", (240, 295), "#112244")
 
     class _NoScreenCapture:
@@ -742,6 +1104,20 @@ def test_production_overview_reader_fails_closed_without_screen_capture():
         actions=_FakeActions(),
         perception=_FakePerception(),
     )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_detect_recipe_button_box",
+        classmethod(lambda cls, image: (56, 226, 163, 271)),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_localized_tooltip_targets_from_layout",
+        classmethod(
+            lambda cls, *, card, tab, layout: (
+                _LocalizedTooltipTarget(kind="bar", search_box=(120, 71, 182, 136), localized_box=(130, 80, 170, 120)),
+            )
+        ),
+    )
 
     with pytest.raises(ValueError, match="tooltip_probe_capture_unavailable"):
         reader._probe_tooltip_identity(
@@ -749,6 +1125,102 @@ def test_production_overview_reader_fails_closed_without_screen_capture():
             tab="smelt",
             templates={"Lead Bar": Image.new("RGB", (10, 10), "gray")},
         )
+
+
+def test_production_overview_reader_fails_closed_without_card_anchor(monkeypatch):
+    card = Image.new("RGB", (240, 295), "#112244")
+    frame = Image.new("RGB", (240, 295), "#223355")
+    reader = ProductionOverviewReader(
+        rects=_FakeRects(),
+        capture=_FakeCapture([card], screen_frames=[frame]),
+        actions=_FakeActions(),
+        perception=_FakePerception(),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_detect_recipe_button_box",
+        classmethod(lambda cls, image: None),
+    )
+
+    with pytest.raises(ValueError, match="tooltip_card_anchor_unverified"):
+        reader._probe_tooltip_identity(
+            rect_key="PRODUCTION_CARD1",
+            tab="smelt",
+            templates={"Lead Bar": Image.new("RGB", (10, 10), "gray")},
+        )
+
+
+def test_production_overview_reader_fails_closed_without_localized_icon(monkeypatch):
+    card = Image.new("RGB", (240, 295), "#112244")
+    frame = Image.new("RGB", (240, 295), "#223355")
+    reader = ProductionOverviewReader(
+        rects=_FakeRects(),
+        capture=_FakeCapture([card], screen_frames=[frame]),
+        actions=_FakeActions(),
+        perception=_FakePerception(),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_detect_recipe_button_box",
+        classmethod(lambda cls, image: (56, 226, 163, 271)),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_localized_tooltip_targets_from_layout",
+        classmethod(
+            lambda cls, *, card, tab, layout: (
+                _LocalizedTooltipTarget(kind="bar", search_box=(120, 71, 182, 136), localized_box=None),
+            )
+        ),
+    )
+
+    with pytest.raises(ValueError, match="tooltip_probe_no_valid_label"):
+        reader._probe_tooltip_identity(
+            rect_key="PRODUCTION_CARD1",
+            tab="smelt",
+            templates={"Lead Bar": Image.new("RGB", (10, 10), "gray")},
+        )
+
+
+def test_production_overview_reader_uses_smelt_ore_search_box_when_localization_missing(monkeypatch):
+    card = Image.new("RGB", (240, 295), "#112244")
+    frame = Image.new("RGB", (240, 295), "#223355")
+
+    class _TooltipPerception:
+        def read_text(self, image, *, prompt, mode):
+            _ = image, prompt, mode
+            return type("Result", (), {"value": "Lead 40/1.00K 59", "backend": "fake"})()
+
+    reader = ProductionOverviewReader(
+        rects=_FakeRects(),
+        capture=_FakeCapture([card], screen_frames=[frame]),
+        actions=_FakeActions(),
+        perception=_TooltipPerception(),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_detect_recipe_button_box",
+        classmethod(lambda cls, image: (56, 226, 163, 271)),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_localized_tooltip_targets_from_layout",
+        classmethod(
+            lambda cls, *, card, tab, layout: (
+                _LocalizedTooltipTarget(kind="ore", search_box=(22, 68, 78, 115), localized_box=None),
+            )
+        ),
+    )
+
+    output_name, backend = reader._probe_tooltip_identity(
+        rect_key="PRODUCTION_CARD1",
+        tab="smelt",
+        templates={"Lead Bar": Image.new("RGB", (10, 10), "gray")},
+    )
+
+    assert output_name == "Lead Bar"
+    assert backend == "tooltip_probe_ore_fake"
+    assert reader.actions.clicks[0] == ((50, 92), 0.35)
 
 
 def test_production_overview_reader_writes_tooltip_probe_audit_artifacts(tmp_path):
@@ -760,6 +1232,236 @@ def test_production_overview_reader_writes_tooltip_probe_audit_artifacts(tmp_pat
         actions=_FakeActions(),
         perception=_FakePerception(),
     )
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_detect_recipe_button_box",
+        classmethod(lambda cls, image: (56, 226, 163, 271)),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_localize_arrow_box",
+        classmethod(lambda cls, image, *, search_box: (104, 84, 116, 96)),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_localized_tooltip_targets_from_layout",
+        classmethod(
+                lambda cls, *, card, tab, layout: (
+                    _LocalizedTooltipTarget(kind="bar", search_box=(120, 71, 182, 136), localized_box=(128, 79, 172, 124)),
+                    _LocalizedTooltipTarget(kind="ore", search_box=(22, 68, 78, 115), localized_box=(27, 73, 69, 105)),
+                )
+            ),
+        )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_localize_target_box",
+        classmethod(lambda cls, image, *, search_box, kind: (188, 147, 220, 182) if kind == "cancel" else None),
+    )
+
+    try:
+        attempts = reader.audit_tooltip_probe_geometry(
+            rect_key="PRODUCTION_CARD1",
+            tab="smelt",
+            output_dir=tmp_path,
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert len(attempts) == 6
+    assert attempts[0]["label"] == "smelt_PRODUCTION_CARD1_bar_center_search_region"
+    assert attempts[0]["search_box"] == (120, 71, 182, 136)
+    assert attempts[0]["localized_box"] == (128, 79, 172, 124)
+    assert attempts[0]["icon_box"] == (120, 71, 182, 136)
+    assert attempts[0]["tooltip_crop_box"] == (35, 52, 240, 146)
+    assert attempts[0]["crop_id"] == "search_region"
+    assert attempts[0]["recipe_button_box"] == (56, 226, 163, 271)
+    assert attempts[0]["arrow_search_box"] == (66, 71, 124, 103)
+    assert attempts[0]["localized_arrow_box"] == (104, 84, 116, 96)
+    assert attempts[0]["progress_bar_box"] == (31, 145, 204, 183)
+    assert attempts[0]["cancel_box"] == (185, 145, 226, 186)
+    assert attempts[0]["localized_cancel_box"] == (188, 147, 220, 182)
+    assert Path(str(attempts[0]["overlay_artifact"])).exists()
+    assert Path(str(attempts[0]["tooltip_artifact"])).exists()
+
+
+def test_production_overview_reader_renders_probe_markers_with_labels(monkeypatch):
+    frame = Image.new("RGB", (600, 1000), "#223355")
+    calls = []
+
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_draw_probe_marker",
+        classmethod(
+            lambda cls, draw, point, *, color, marker_label: calls.append(
+                {"point": point, "color": color, "marker_label": marker_label}
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_draw_crosshair",
+        staticmethod(lambda draw, point, *, color: (_ for _ in ()).throw(AssertionError("crosshair fallback should not run"))),
+    )
+
+    overlay = ProductionOverviewReader._render_tooltip_probe_audit_overlay(
+        frame=frame,
+        card_rect=(35, 540, 240, 295),
+        layout=_ProductionCardLayout(
+            recipe_button_box=(56, 226, 163, 271),
+            input_icon_box=(14, 71, 70, 136),
+            output_icon_box=(120, 71, 182, 136),
+            progress_bar_box=(31, 145, 204, 183),
+            cancel_box=(185, 145, 226, 186),
+            arrow_search_box=(66, 79, 124, 108),
+            localized_arrow_box=(104, 84, 116, 96),
+        ),
+        search_box=(120, 71, 182, 136),
+        localized_box=(128, 79, 172, 124),
+        probe_point=(151, 104),
+        tooltip_crop_box=(54, 64, 240, 130),
+        label="smelt_PRODUCTION_CARD1_bar_center_search_region",
+        probe_markers=(
+            _TooltipProbeMarker(point=(151, 104), marker_label="bar_center_1", color="#ffd400"),
+            _TooltipProbeMarker(point=(142, 95), marker_label="bar_upper_left_2", color="#ff9f0a"),
+        ),
+        localized_targets=(
+            _LocalizedTooltipTarget(kind="bar", search_box=(120, 71, 182, 136), localized_box=(128, 79, 172, 124)),
+        ),
+        localized_cancel_box=(188, 147, 220, 182),
+    )
+
+    assert overlay.size == frame.size
+    assert calls == [
+        {"point": (186, 644), "color": "#ffd400", "marker_label": "bar_center_1"},
+        {"point": (177, 635), "color": "#ff9f0a", "marker_label": "bar_upper_left_2"},
+    ]
+
+
+def test_production_overview_reader_overlay_falls_back_without_probe_markers(monkeypatch):
+    frame = Image.new("RGB", (600, 1000), "#223355")
+    crosshair_calls = []
+    marker_calls = []
+
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_draw_crosshair",
+        staticmethod(lambda draw, point, *, color: crosshair_calls.append({"point": point, "color": color})),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_draw_probe_marker",
+        classmethod(lambda cls, draw, point, *, color, marker_label: marker_calls.append(marker_label)),
+    )
+
+    overlay = ProductionOverviewReader._render_tooltip_probe_audit_overlay(
+        frame=frame,
+        card_rect=(35, 540, 240, 295),
+        layout=_ProductionCardLayout(
+            recipe_button_box=(56, 226, 163, 271),
+            input_icon_box=(14, 71, 70, 136),
+            output_icon_box=(120, 71, 182, 136),
+            progress_bar_box=(31, 145, 204, 183),
+            cancel_box=(185, 145, 226, 186),
+            arrow_search_box=(66, 79, 124, 108),
+            localized_arrow_box=(104, 84, 116, 96),
+        ),
+        search_box=(120, 71, 182, 136),
+        localized_box=(128, 79, 172, 124),
+        probe_point=(151, 104),
+        tooltip_crop_box=(54, 64, 240, 130),
+        label="smelt_PRODUCTION_CARD1_bar_center_search_region",
+    )
+
+    assert overlay.size == frame.size
+    assert crosshair_calls == [{"point": (186, 644), "color": "#ff3b30"}]
+    assert marker_calls == []
+
+
+def test_production_overview_reader_overlay_distinguishes_search_and_localized_boxes():
+    frame = Image.new("RGB", (400, 400), "#223355")
+
+    overlay = ProductionOverviewReader._render_tooltip_probe_audit_overlay(
+        frame=frame,
+        card_rect=(20, 20, 200, 200),
+        layout=_ProductionCardLayout(
+            recipe_button_box=(60, 150, 140, 185),
+            input_icon_box=(20, 40, 70, 95),
+            output_icon_box=(120, 40, 180, 100),
+            progress_bar_box=(30, 110, 170, 130),
+            cancel_box=(160, 105, 190, 135),
+            arrow_search_box=(80, 55, 122, 82),
+            localized_arrow_box=(94, 60, 108, 74),
+        ),
+        search_box=(120, 40, 180, 100),
+        localized_box=(132, 50, 166, 86),
+        probe_point=(149, 68),
+        tooltip_crop_box=(160, 45, 200, 95),
+        label="overlay_test",
+        localized_targets=(
+            _LocalizedTooltipTarget(kind="output", search_box=(120, 40, 180, 100), localized_box=(132, 50, 166, 86)),
+        ),
+        localized_cancel_box=(165, 108, 184, 128),
+    )
+
+    assert overlay.getpixel((140, 60)) == (255, 224, 102)
+    assert overlay.getpixel((152, 70)) == (61, 220, 255)
+    assert overlay.getpixel((100, 75)) == (199, 125, 255)
+    assert overlay.getpixel((114, 80)) == (255, 92, 255)
+
+
+def test_production_overview_reader_audit_records_multiple_probe_markers(monkeypatch, tmp_path):
+    card = Image.new("RGB", (240, 295), "#112244")
+    frame = Image.new("RGB", (600, 1000), "#223355")
+    reader = ProductionOverviewReader(
+        rects=_FakeRects(),
+        capture=_FakeCapture([card], screen_frames=[frame] * 4),
+        actions=_FakeActions(),
+        perception=_FakePerception(),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_detect_recipe_button_box",
+        classmethod(lambda cls, image: (56, 226, 163, 271)),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_localize_arrow_box",
+        classmethod(lambda cls, image, *, search_box: (104, 84, 116, 96)),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_localized_tooltip_targets_from_layout",
+        classmethod(
+            lambda cls, *, card, tab, layout: (
+                _LocalizedTooltipTarget(kind="bar", search_box=(120, 71, 182, 136), localized_box=(128, 79, 172, 124)),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_tooltip_probe_point_specs",
+        classmethod(
+            lambda cls, icon_box: (
+                _TooltipProbePoint(point_id="center", point=(151, 104)),
+                _TooltipProbePoint(point_id="lower_right", point=(160, 113)),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_tooltip_crop_candidates",
+        classmethod(
+            lambda cls, icon_box, *, card_size: (
+                _TooltipCropCandidate(crop_id="search_region", box=(54, 64, 240, 130)),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        ProductionOverviewReader,
+        "_localize_target_box",
+        classmethod(lambda cls, image, *, search_box, kind: (188, 147, 220, 182) if kind == "cancel" else None),
+    )
 
     attempts = reader.audit_tooltip_probe_geometry(
         rect_key="PRODUCTION_CARD1",
@@ -767,13 +1469,14 @@ def test_production_overview_reader_writes_tooltip_probe_audit_artifacts(tmp_pat
         output_dir=tmp_path,
     )
 
-    assert len(attempts) == 6
-    assert attempts[0]["label"] == "smelt_PRODUCTION_CARD1_bar_center_search_region"
-    assert attempts[0]["icon_box"] == (120, 71, 182, 136)
-    assert attempts[0]["tooltip_crop_box"] == (54, 64, 240, 130)
-    assert attempts[0]["crop_id"] == "search_region"
-    assert Path(str(attempts[0]["overlay_artifact"])).exists()
-    assert Path(str(attempts[0]["tooltip_artifact"])).exists()
+    assert len(attempts) == 2
+    assert attempts[0]["probe_markers"] == (
+        {"point": (151, 104), "marker_label": "bar_center_1", "color": "#ffd400"},
+    )
+    assert attempts[1]["probe_markers"] == (
+        {"point": (151, 104), "marker_label": "bar_center_1", "color": "#ffd400"},
+        {"point": (160, 113), "marker_label": "bar_lower_right_2", "color": "#ff9f0a"},
+    )
 
 
 def test_production_overview_reader_tries_tooltip_probe_before_recipe_popup(monkeypatch):

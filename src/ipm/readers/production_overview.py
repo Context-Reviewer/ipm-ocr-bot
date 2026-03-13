@@ -254,11 +254,14 @@ class ProductionOverviewReader:
     @staticmethod
     def _timer_text_box(card_size: tuple[int, int]) -> tuple[int, int, int, int]:
         width, height = card_size
+        progress_left = int(round(width * 0.13))
+        progress_right = int(round(width * 0.85))
+        progress_top = int(round(height * 0.49))
         return (
-            int(round(width * 0.27)),
-            int(round(height * 0.56)),
-            int(round(width * 0.58)),
-            int(round(height * 0.66)),
+            int(round(progress_left + (width * 0.12))),
+            int(round(progress_top - (height * 0.01))),
+            int(round(progress_right - (width * 0.18))),
+            int(round(progress_top + (height * 0.09))),
         )
 
     def _read_timer_text(self, card: Image.Image) -> tuple[str | None, str]:

@@ -338,7 +338,7 @@ def test_production_overview_reader_keeps_blank_without_visual_signals_inactive(
 
 
 def test_production_overview_reader_derives_timer_text_box_from_card_geometry():
-    assert ProductionOverviewReader._timer_text_box((240, 295)) == (65, 165, 139, 195)
+    assert ProductionOverviewReader._timer_text_box((240, 295)) == (60, 142, 161, 172)
 
 
 def test_production_overview_reader_timer_text_box_stays_separate_from_quantity_regions():
@@ -348,6 +348,7 @@ def test_production_overview_reader_timer_text_box_stays_separate_from_quantity_
 
     assert timer_box[1] >= input_qty_box[3]
     assert timer_box[1] >= output_qty_box[3]
+    assert timer_box[3] <= 183
 
 
 def test_production_overview_reader_accepts_timer_text_with_visual_timer_presence(monkeypatch):

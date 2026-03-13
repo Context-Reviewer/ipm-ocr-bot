@@ -337,6 +337,175 @@ def test_production_overview_reader_keeps_blank_without_visual_signals_inactive(
     assert backend == "visual_idle_signal"
 
 
+def test_production_overview_reader_derives_timer_text_box_from_card_geometry():
+    assert ProductionOverviewReader._timer_text_box((240, 295)) == (65, 165, 139, 195)
+
+
+def test_production_overview_reader_timer_text_box_stays_separate_from_quantity_regions():
+    timer_box = ProductionOverviewReader._timer_text_box((240, 295))
+    input_qty_box = (5, 85, 120, 125)
+    output_qty_box = (140, 80, 230, 135)
+
+    assert timer_box[1] >= input_qty_box[3]
+    assert timer_box[1] >= output_qty_box[3]
+
+
+def test_production_overview_reader_accepts_timer_text_with_visual_timer_presence(monkeypatch):
+    reader = ProductionOverviewReader(
+        rects=None,
+        capture=None,
+        actions=None,
+        perception=_FakePerception(),
+    )
+    card = Image.new("RGB", (240, 295), "black")
+    monkeypatch.setattr(ProductionOverviewReader, "_read_timer_text", lambda self, image: ("03:46", "fake"))
+    monkeypatch.setattr(ProductionOverviewReader, "_progress_fill_fraction", staticmethod(lambda image: 0.0))
+    monkeypatch.setattr(ProductionOverviewReader, "_cancel_button_signal", classmethod(lambda cls, image: False))
+    monkeypatch.setattr(ProductionOverviewReader, "_timer_region_signal", classmethod(lambda cls, image: False))
+    monkeypatch.setattr(ProductionOverviewReader, "_timer_text_presence_signal", classmethod(lambda cls, image: True))
+
+    active, timer_text, backend = reader._resolve_active_state(tab="smelt", card=card)
+
+    assert active is True
+    assert timer_text == "03:46"
+    assert backend == "timer_text_visual_signal+fake"
+
+
+def test_production_overview_reader_normalizes_common_timer_ocr_substitutions(monkeypatch):
+    reader = ProductionOverviewReader(
+        rects=None,
+        capture=None,
+        actions=None,
+        perception=_FakePerception(),
+    )
+    card = Image.new("RGB", (240, 295), "black")
+    monkeypatch.setattr(ProductionOverviewReader, "_read_timer_text", lambda self, image: ("O3;46", "fake"))
+    monkeypatch.setattr(ProductionOverviewReader, "_progress_fill_fraction", staticmethod(lambda image: 0.0))
+    monkeypatch.setattr(ProductionOverviewReader, "_cancel_button_signal", classmethod(lambda cls, image: False))
+    monkeypatch.setattr(ProductionOverviewReader, "_timer_region_signal", classmethod(lambda cls, image: False))
+    monkeypatch.setattr(ProductionOverviewReader, "_timer_text_presence_signal", classmethod(lambda cls, image: True))
+
+    active, timer_text, backend = reader._resolve_active_state(tab="smelt", card=card)
+
+    assert active is True
+    assert timer_text == "O3;46"
+    assert backend == "timer_text_visual_signal+fake"
+
+
+def test_production_overview_reader_accepts_hour_timer_text(monkeypatch):
+    reader = ProductionOverviewReader(
+        rects=None,
+        capture=None,
+        actions=None,
+        perception=_FakePerception(),
+    )
+    card = Image.new("RGB", (240, 295), "black")
+    monkeypatch.setattr(ProductionOverviewReader, "_read_timer_text", lambda self, image: ("1:22:43", "fake"))
+    monkeypatch.setattr(ProductionOverviewReader, "_progress_fill_fraction", staticmethod(lambda image: 0.0))
+    monkeypatch.setattr(ProductionOverviewReader, "_cancel_button_signal", classmethod(lambda cls, image: False))
+    monkeypatch.setattr(ProductionOverviewReader, "_timer_region_signal", classmethod(lambda cls, image: False))
+    monkeypatch.setattr(ProductionOverviewReader, "_timer_text_presence_signal", classmethod(lambda cls, image: True))
+
+    active, timer_text, backend = reader._resolve_active_state(tab="smelt", card=card)
+
+    assert active is True
+    assert timer_text == "1:22:43"
+    assert backend == "timer_text_visual_signal+fake"
+
+
+def test_production_overview_reader_rejects_ampm_clock_text(monkeypatch):
+    reader = ProductionOverviewReader(
+        rects=None,
+        capture=None,
+        actions=None,
+        perception=_FakePerception(),
+    )
+    card = Image.new("RGB", (240, 295), "black")
+    monkeypatch.setattr(ProductionOverviewReader, "_read_timer_text", lambda self, image: ("4:44PM", "fake"))
+    monkeypatch.setattr(ProductionOverviewReader, "_progress_fill_fraction", staticmethod(lambda image: 0.0))
+    monkeypatch.setattr(ProductionOverviewReader, "_cancel_button_signal", classmethod(lambda cls, image: False))
+    monkeypatch.setattr(ProductionOverviewReader, "_timer_region_signal", classmethod(lambda cls, image: False))
+    monkeypatch.setattr(ProductionOverviewReader, "_timer_text_presence_signal", classmethod(lambda cls, image: True))
+
+    with pytest.raises(ValueError, match="unreadable_active_state:4:44PM"):
+        reader._resolve_active_state(tab="smelt", card=card)
+
+
+def test_production_overview_reader_rejects_quantity_like_timer_text(monkeypatch):
+    reader = ProductionOverviewReader(
+        rects=None,
+        capture=None,
+        actions=None,
+        perception=_FakePerception(),
+    )
+    card = Image.new("RGB", (240, 295), "black")
+    monkeypatch.setattr(ProductionOverviewReader, "_read_timer_text", lambda self, image: ("77211.00K", "fake"))
+    monkeypatch.setattr(ProductionOverviewReader, "_progress_fill_fraction", staticmethod(lambda image: 0.0))
+    monkeypatch.setattr(ProductionOverviewReader, "_cancel_button_signal", classmethod(lambda cls, image: False))
+    monkeypatch.setattr(ProductionOverviewReader, "_timer_region_signal", classmethod(lambda cls, image: False))
+    monkeypatch.setattr(ProductionOverviewReader, "_timer_text_presence_signal", classmethod(lambda cls, image: True))
+
+    with pytest.raises(ValueError, match="unreadable_active_state:77211.00K"):
+        reader._resolve_active_state(tab="smelt", card=card)
+
+
+def test_production_overview_reader_rejects_slash_quantity_like_timer_text(monkeypatch):
+    reader = ProductionOverviewReader(
+        rects=None,
+        capture=None,
+        actions=None,
+        perception=_FakePerception(),
+    )
+    card = Image.new("RGB", (240, 295), "black")
+    monkeypatch.setattr(ProductionOverviewReader, "_read_timer_text", lambda self, image: ("404/1.00K", "fake"))
+    monkeypatch.setattr(ProductionOverviewReader, "_progress_fill_fraction", staticmethod(lambda image: 0.0))
+    monkeypatch.setattr(ProductionOverviewReader, "_cancel_button_signal", classmethod(lambda cls, image: False))
+    monkeypatch.setattr(ProductionOverviewReader, "_timer_region_signal", classmethod(lambda cls, image: False))
+    monkeypatch.setattr(ProductionOverviewReader, "_timer_text_presence_signal", classmethod(lambda cls, image: True))
+
+    with pytest.raises(ValueError, match="unreadable_active_state:404/1.00K"):
+        reader._resolve_active_state(tab="smelt", card=card)
+
+
+def test_production_overview_reader_rejects_malformed_timer_like_text_without_support(monkeypatch):
+    reader = ProductionOverviewReader(
+        rects=None,
+        capture=None,
+        actions=None,
+        perception=_FakePerception(),
+    )
+    card = Image.new("RGB", (240, 295), "black")
+    monkeypatch.setattr(ProductionOverviewReader, "_read_timer_text", lambda self, image: ("03:4G", "fake"))
+    monkeypatch.setattr(ProductionOverviewReader, "_progress_fill_fraction", staticmethod(lambda image: 0.0))
+    monkeypatch.setattr(ProductionOverviewReader, "_cancel_button_signal", classmethod(lambda cls, image: False))
+    monkeypatch.setattr(ProductionOverviewReader, "_timer_region_signal", classmethod(lambda cls, image: False))
+    monkeypatch.setattr(ProductionOverviewReader, "_timer_text_presence_signal", classmethod(lambda cls, image: True))
+
+    with pytest.raises(ValueError, match="unreadable_active_state"):
+        reader._resolve_active_state(tab="smelt", card=card)
+
+
+def test_production_overview_reader_keeps_no_recipe_selected_inactive(monkeypatch):
+    reader = ProductionOverviewReader(
+        rects=None,
+        capture=None,
+        actions=None,
+        perception=_FakePerception(),
+    )
+    card = Image.new("RGB", (240, 295), "black")
+    monkeypatch.setattr(ProductionOverviewReader, "_read_timer_text", lambda self, image: ("No Recipe Selected", "fake"))
+    monkeypatch.setattr(ProductionOverviewReader, "_progress_fill_fraction", staticmethod(lambda image: 0.0))
+    monkeypatch.setattr(ProductionOverviewReader, "_cancel_button_signal", classmethod(lambda cls, image: False))
+    monkeypatch.setattr(ProductionOverviewReader, "_timer_region_signal", classmethod(lambda cls, image: False))
+    monkeypatch.setattr(ProductionOverviewReader, "_timer_text_presence_signal", classmethod(lambda cls, image: False))
+
+    active, timer_text, backend = reader._resolve_active_state(tab="smelt", card=card)
+
+    assert active is False
+    assert timer_text is None
+    assert backend == "fake"
+
+
 def test_production_overview_reader_falls_back_to_smelt_recipe_popup(monkeypatch):
     card = Image.new("RGB", (240, 295), "black")
 

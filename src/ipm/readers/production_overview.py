@@ -16,6 +16,11 @@ from ..state import ProductionOverviewCardState
 from .common import parse_compact_number
 
 _TIMER_TEXT_RE = re.compile(r"[0-9].*[SMH]|[0-9]+:[0-9]+", re.IGNORECASE)
+_CLOCK_TEXT_RE = re.compile(r"\d{1,2}:\d{2}(?::\d{2})?(AM|PM)\b", re.IGNORECASE)
+_QUANTITY_TEXT_RE = re.compile(
+    r"(\d[\d.,]*[KMBT]\b)|(\d[\d.,]*/\d[\d.,]*(?:[KMBT])?)",
+    re.IGNORECASE,
+)
 _TIMER_PROMPT = "Read only the visible timer text or OFF. Return only the timer text."
 _COUNT_PROMPT = "Read only the visible output quantity. Keep suffixes like K or M if present."
 _INPUT_COUNT_PROMPT = "Read only the visible left input quantity text like 404/1.00K. Return only that quantity text."
@@ -158,7 +163,21 @@ class ProductionOverviewReader:
 
     @staticmethod
     def _normalize_timer_text(text: str | None) -> str:
-        return re.sub(r"\s+", "", str(text or "").upper())
+        normalized = re.sub(r"\s+", "", str(text or "").upper())
+        if not normalized:
+            return ""
+        if "NORECIPESELECTED" in normalized:
+            return "NORECIPESELECTED"
+        if "OFF" in normalized and len(normalized) <= 6:
+            return "OFF"
+        translated = (
+            normalized.replace("|", "1")
+            .replace("I", "1")
+            .replace("L", "1")
+            .replace("O", "0")
+            .replace(";", ":")
+        )
+        return translated
 
     @staticmethod
     def _card_status(card: Image.Image) -> str:
@@ -217,17 +236,50 @@ class ProductionOverviewReader:
 
     @classmethod
     def _timer_region_signal(cls, card: Image.Image) -> bool:
-        stats = cls._region_signal_stats(card.crop((55, 145, 185, 205)))
+        stats = cls._region_signal_stats(card.crop(cls._timer_text_box(card.size)))
         return stats["dynamic_range"] >= 240.0 and (
             stats["cyan_fraction"] >= 0.10
             or (stats["edge_fraction"] >= 0.068 and stats["bright_fraction"] >= 0.03)
         )
 
+    @classmethod
+    def _timer_text_presence_signal(cls, card: Image.Image) -> bool:
+        stats = cls._region_signal_stats(card.crop(cls._timer_text_box(card.size)))
+        return (
+            stats["dynamic_range"] >= 120.0
+            and stats["edge_fraction"] >= 0.028
+            and stats["bright_fraction"] >= 0.01
+        )
+
+    @staticmethod
+    def _timer_text_box(card_size: tuple[int, int]) -> tuple[int, int, int, int]:
+        width, height = card_size
+        return (
+            int(round(width * 0.27)),
+            int(round(height * 0.56)),
+            int(round(width * 0.58)),
+            int(round(height * 0.66)),
+        )
+
     def _read_timer_text(self, card: Image.Image) -> tuple[str | None, str]:
-        crop = card.crop((55, 145, 185, 205))
+        crop = card.crop(self._timer_text_box(card.size))
         result = self.perception.read_text(crop, prompt=_TIMER_PROMPT, mode="generic")
         value = str(getattr(result, "value", "") or "").strip()
         return (value or None), str(getattr(result, "backend", "") or "")
+
+    @staticmethod
+    def _valid_timer_like_text(normalized: str) -> bool:
+        if not normalized:
+            return False
+        if _CLOCK_TEXT_RE.fullmatch(normalized):
+            return False
+        if _QUANTITY_TEXT_RE.search(normalized):
+            return False
+        return bool(
+            re.fullmatch(r"\d{1,2}:\d{2}", normalized)
+            or re.fullmatch(r"\d{1,2}:\d{2}:\d{2}", normalized)
+            or re.fullmatch(r"\d+[SMH]", normalized)
+        )
 
     def _read_output_quantity(self, card: Image.Image) -> tuple[int | None, str]:
         crop = card.crop((140, 80, 230, 135))
@@ -1824,18 +1876,33 @@ class ProductionOverviewReader:
         fill_fraction = self._progress_fill_fraction(card)
         cancel_signal = self._cancel_button_signal(card)
         timer_signal = self._timer_region_signal(card)
+        timer_text_signal = self._timer_text_presence_signal(card)
+        valid_timer_text = self._valid_timer_like_text(normalized)
         visual_backend = self._visual_active_backend(
             fill_fraction=fill_fraction,
             cancel_signal=cancel_signal,
             timer_signal=timer_signal,
         )
         if visual_backend is not None:
-            if normalized and _TIMER_TEXT_RE.search(normalized):
+            if valid_timer_text:
                 return True, timer_text, f"{visual_backend}+{timer_backend or 'timer_text'}"
             return True, None, visual_backend
-        if normalized and _TIMER_TEXT_RE.search(normalized) and (cancel_signal or timer_signal or fill_fraction >= _ACTIVE_FILL_HINT_MIN):
-            return True, timer_text, timer_backend or "timer_text"
+        if valid_timer_text:
+            support_parts = []
+            if cancel_signal:
+                support_parts.append("cancel_button_signal")
+            if timer_signal:
+                support_parts.append("timer_region_signal")
+            if timer_text_signal:
+                support_parts.append("timer_text_visual_signal")
+            if fill_fraction >= _ACTIVE_FILL_HINT_MIN:
+                support_parts.append("progress_fill_hint")
+            if support_parts:
+                return True, timer_text, "+".join([*support_parts, timer_backend or "timer_text"])
         if normalized == "OFF":
+            if not cancel_signal and not timer_signal and fill_fraction < _ACTIVE_FILL_HINT_MIN:
+                return False, None, timer_backend or "timer_text"
+        if normalized == "NORECIPESELECTED":
             if not cancel_signal and not timer_signal and fill_fraction < _ACTIVE_FILL_HINT_MIN:
                 return False, None, timer_backend or "timer_text"
         if not normalized and not cancel_signal and not timer_signal and fill_fraction < _ACTIVE_FILL_HINT_MIN:

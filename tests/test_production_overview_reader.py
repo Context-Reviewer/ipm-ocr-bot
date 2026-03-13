@@ -438,6 +438,16 @@ class _FakeCapture:
         return image.copy()
 
 
+class _RectRecordingCapture:
+    def __init__(self, image):
+        self.image = image
+        self.rects = []
+
+    def capture_client_bbox(self, rect):
+        self.rects.append(rect)
+        return self.image.copy()
+
+
 class _FakeRects:
     def get(self, key):
         if key == "PRODUCTION_CARD1":
@@ -451,9 +461,54 @@ class _FakeRects:
         return None
 
 
+def _make_structural_top_anchor(*, card_offset_y: int = 0) -> Image.Image:
+    image = Image.new("RGB", (240, 150), "#161d2b")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((18, 10, 108, 30), fill="#f3f3f3")
+    draw.rectangle((0, 40, 239, 64), fill="#2a3040")
+    top = 65 + card_offset_y
+    draw.rounded_rectangle((0, top, 205, top + 84), radius=20, fill="#2c5874", outline="#42e7ff", width=2)
+    draw.rounded_rectangle((55, top + 48, 145, min(149, top + 76)), radius=10, outline="#18e3ff", width=3)
+    draw.line((20, top + 40, 175, top + 40), fill="#090f18", width=8)
+    draw.rectangle((15, top + 10, 55, top + 40), fill="#d6d6d6")
+    draw.rectangle((122, top + 12, 162, top + 38), fill="#c2c2c2")
+    return image
+
+
+def _make_non_top_anchor() -> Image.Image:
+    image = Image.new("RGB", (240, 150), "#161d2b")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((18, 10, 108, 30), fill="#f3f3f3")
+    draw.rectangle((0, 40, 239, 90), fill="#2a3040")
+    draw.rounded_rectangle((0, 95, 205, 149), radius=20, fill="#24384b", outline="#2b8aa1", width=2)
+    draw.line((20, 126, 175, 126), fill="#090f18", width=8)
+    return image
+
+
+def test_production_overview_reader_derives_structural_top_anchor_rect_from_card():
+    rect = ProductionOverviewReader._top_anchor_rect_from_card_rect((35, 540, 240, 295))
+
+    assert rect == (35, 500, 240, 150)
+
+
+def test_production_overview_reader_captures_structural_top_anchor_region():
+    capture = _RectRecordingCapture(Image.new("RGB", (240, 150), "#123456"))
+    reader = ProductionOverviewReader(
+        rects=type("Rects", (), {"get": lambda self, key: (35, 540, 240, 295) if key == "PRODUCTION_CARD1" else None})(),
+        capture=capture,
+        actions=_FakeActions(),
+        perception=_FakePerception(),
+    )
+
+    anchor = reader._capture_top_anchor()
+
+    assert anchor is not None
+    assert capture.rects == [(35, 500, 240, 150)]
+
+
 def test_production_overview_reader_scrolls_to_top_without_icon_latch():
-    frame_a = Image.new("RGB", (240, 295), "#123456")
-    frame_b = Image.new("RGB", (240, 295), "#345678")
+    frame_a = _make_non_top_anchor()
+    frame_b = _make_structural_top_anchor()
     reader = ProductionOverviewReader(
         rects=_FakeRects(),
         capture=_FakeCapture([frame_a, frame_b, frame_b, frame_b]),
@@ -468,9 +523,11 @@ def test_production_overview_reader_scrolls_to_top_without_icon_latch():
 
 
 def test_production_overview_reader_scrolls_back_to_top_with_best_anchor_fallback():
-    top_frame = Image.new("RGB", (240, 295), "#345678")
-    lower_frame = Image.new("RGB", (240, 295), "#111111")
-    noisy_frame = Image.new("RGB", (240, 295), "#222222")
+    top_frame = _make_structural_top_anchor()
+    lower_frame = _make_non_top_anchor()
+    noisy_frame = _make_non_top_anchor()
+    draw = ImageDraw.Draw(noisy_frame)
+    draw.rectangle((12, 78, 42, 108), fill="#5fa6cf")
     near_top_frame = top_frame.copy()
     near_top_frame.paste(Image.new("RGB", (20, 20), "#355779"), (5, 5))
     reader = ProductionOverviewReader(
@@ -485,21 +542,75 @@ def test_production_overview_reader_scrolls_back_to_top_with_best_anchor_fallbac
     assert len(reader.actions.scrolls) >= 1
 
 
+def test_production_overview_reader_scroll_back_stops_when_already_at_top():
+    top_frame = _make_structural_top_anchor()
+    reader = ProductionOverviewReader(
+        rects=_FakeRects(),
+        capture=_FakeCapture([top_frame, top_frame]),
+        actions=_FakeActions(),
+        perception=_FakePerception(),
+    )
+
+    reader._scroll_back_to_top(top_anchor=top_frame)
+
+    assert reader.actions.scrolls == []
+
+
+def test_production_overview_reader_scroll_back_stops_on_repeated_structural_top():
+    top_frame = _make_structural_top_anchor()
+    shifted_top = top_frame.copy()
+    ImageDraw.Draw(shifted_top).rectangle((170, 112, 210, 138), fill="#345d78")
+    reader = ProductionOverviewReader(
+        rects=_FakeRects(),
+        capture=_FakeCapture([_make_non_top_anchor(), shifted_top, shifted_top, shifted_top]),
+        actions=_FakeActions(),
+        perception=_FakePerception(),
+    )
+
+    reader._scroll_back_to_top(top_anchor=top_frame)
+
+    assert len(reader.actions.scrolls) == 1
+
+
 def test_production_overview_reader_caps_top_scroll_attempts(monkeypatch):
-    frame = Image.new("RGB", (240, 295), "#123456")
-    frame.paste(Image.new("RGB", (40, 40), "#f0f0f0"), (20, 20))
+    frame = _make_structural_top_anchor()
     reader = ProductionOverviewReader(
         rects=_FakeRects(),
         capture=_FakeCapture([frame, frame, frame, frame, frame]),
         actions=_FakeActions(),
         perception=_FakePerception(),
     )
-    monkeypatch.setattr(ProductionOverviewReader, "_extract_output_icon", classmethod(lambda cls, image: image))
 
     top_anchor = reader._scroll_to_top_view()
 
     assert top_anchor is not None
-    assert len(reader.actions.scrolls) <= 3
+    assert len(reader.actions.scrolls) <= 5
+
+
+def test_production_overview_reader_fails_closed_when_top_never_stabilizes():
+    frames = [
+        Image.new("RGB", (240, 150), "#101010"),
+        Image.new("RGB", (240, 150), "#202020"),
+        Image.new("RGB", (240, 150), "#303030"),
+        Image.new("RGB", (240, 150), "#404040"),
+        Image.new("RGB", (240, 150), "#505050"),
+        Image.new("RGB", (240, 150), "#606060"),
+        Image.new("RGB", (240, 150), "#707070"),
+    ]
+    reader = ProductionOverviewReader(
+        rects=_FakeRects(),
+        capture=_FakeCapture(frames),
+        actions=_FakeActions(),
+        perception=_FakePerception(),
+    )
+
+    with pytest.raises(ValueError, match="production_top_latch_failed"):
+        reader._scroll_to_top_view()
+
+
+def test_production_overview_reader_structural_top_anchor_requires_layout():
+    assert ProductionOverviewReader._is_structural_top_anchor(_make_structural_top_anchor()) is True
+    assert ProductionOverviewReader._is_structural_top_anchor(_make_non_top_anchor()) is False
 
 
 def test_production_overview_reader_uses_upper_rects_for_lower_view(monkeypatch):

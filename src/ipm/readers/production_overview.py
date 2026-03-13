@@ -27,7 +27,13 @@ _SMELT_OUTPUT_REGION_WEIGHT = 0.20
 _SMELT_INPUT_QTY_WEIGHT = 0.18
 _ACTIVE_FILL_HINT_MIN = 0.008
 _ACTIVE_FILL_CONFIDENT_MIN = 0.05
-_PRODUCTION_TOP_SCROLL_MAX_ATTEMPTS = 3
+_PRODUCTION_TOP_SCROLL_MAX_ATTEMPTS = 5
+_TOP_ANCHOR_STABLE_DIFF_MAX = 1.0
+_TOP_ANCHOR_BEST_DIFF_MAX = 1.2
+_TOP_ANCHOR_HEADER_EDGE_MIN = 0.020
+_TOP_ANCHOR_DYNAMIC_RANGE_MIN = 90.0
+_TOP_ANCHOR_CARD_BAND_EDGE_MIN = 0.030
+_TOP_ANCHOR_CARD_BAND_MEAN_MIN = 40.0
 _LOCALIZED_TARGET_DIFF_MIN = 26.0
 _LOCALIZED_TARGET_MIN_AREA = 18
 _LOCALIZED_TARGET_EXPAND_PX = 2
@@ -1927,78 +1933,156 @@ class ProductionOverviewReader:
             return _PRODUCTION_SCROLL_DELAY_SECONDS
 
     @staticmethod
-    def _top_anchor_frame(card: Image.Image | None) -> Image.Image | None:
-        if card is None:
+    def _top_anchor_rect_from_card_rect(card_rect: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+        x, y, width, _height = card_rect
+        return (int(x), int(y - 40), int(width), 150)
+
+    def _capture_top_anchor(self) -> Image.Image | None:
+        rect = getattr(self.rects, "get", lambda _key: None)("PRODUCTION_CARD1")
+        if rect is None:
             return None
-        width, height = card.size
-        return card.crop(
-            (
-                int(round(width * 0.06)),
-                int(round(height * 0.05)),
-                int(round(width * 0.92)),
-                int(round(height * 0.47)),
+        capture_rect = getattr(self.capture, "capture_client_bbox", None)
+        if not callable(capture_rect):
+            return None
+        return capture_rect(self._top_anchor_rect_from_card_rect(rect))
+
+    @classmethod
+    def _top_anchor_signature(cls, anchor: Image.Image | None) -> Image.Image | None:
+        if anchor is None:
+            return None
+        gray = np.asarray(anchor.convert("L"), dtype=np.uint8)
+        if gray.size == 0:
+            return anchor.convert("L")
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        resized = cv2.resize(blurred, (64, 40), interpolation=cv2.INTER_AREA)
+        return Image.fromarray(resized, mode="L")
+
+    @classmethod
+    def _is_structural_top_anchor(cls, anchor: Image.Image | None) -> bool:
+        if anchor is None:
+            return False
+        gray = anchor.convert("L")
+        extrema = gray.getextrema()
+        dynamic_range = float(int(extrema[1]) - int(extrema[0]))
+        if dynamic_range < _TOP_ANCHOR_DYNAMIC_RANGE_MIN:
+            return False
+        width, height = gray.size
+        if width < 32 or height < 60:
+            return False
+
+        def _band(top: float, bottom: float) -> Image.Image:
+            return gray.crop(
+                (
+                    0,
+                    int(round(height * top)),
+                    width,
+                    int(round(height * bottom)),
+                )
             )
+
+        header_band = _band(0.05, 0.28)
+        card_upper_band = _band(0.43, 0.65)
+        card_lower_band = _band(0.65, 0.95)
+
+        header_stats = cls._region_signal_stats(header_band.convert("RGB"))
+        candidate_card_stats = (
+            cls._region_signal_stats(card_upper_band.convert("RGB")),
+            cls._region_signal_stats(card_lower_band.convert("RGB")),
+        )
+        strongest_card_band = max(
+            candidate_card_stats,
+            key=lambda stats: (stats["dynamic_range"], stats["edge_fraction"]),
+        )
+
+        return bool(
+            header_stats["edge_fraction"] >= _TOP_ANCHOR_HEADER_EDGE_MIN
+            and strongest_card_band["edge_fraction"] >= _TOP_ANCHOR_CARD_BAND_EDGE_MIN
+            and strongest_card_band["dynamic_range"] >= _TOP_ANCHOR_DYNAMIC_RANGE_MIN
+            and strongest_card_band["bright_fraction"] >= 0.001
+            and max(
+                float(ImageStat.Stat(card_upper_band).mean[0]),
+                float(ImageStat.Stat(card_lower_band).mean[0]),
+            )
+            >= _TOP_ANCHOR_CARD_BAND_MEAN_MIN
         )
 
     def _scroll_to_lower_cards(self, *, top_anchor: Image.Image | None) -> None:
         point = self._wheel_point()
         if not self.actions.scroll_client_wheel(point, -120, delay=self._scroll_delay_seconds()):
             raise ValueError("production_scroll_down_failed")
-        current = self._capture_rect("PRODUCTION_CARD1")
-        if self._image_mean_abs_diff(self._top_anchor_frame(top_anchor), self._top_anchor_frame(current)) <= 1.0:
-            raise ValueError("production_scroll_down_not_observed")
+        current = self._capture_top_anchor()
+        diff = self._image_mean_abs_diff(self._top_anchor_signature(top_anchor), self._top_anchor_signature(current))
+        if diff <= _TOP_ANCHOR_STABLE_DIFF_MAX:
+            raise ValueError(f"production_scroll_down_not_observed:{diff:.3f}")
 
     def _scroll_to_top_view(self) -> Image.Image | None:
         point = self._wheel_point()
-        previous = None
+        previous = self._top_anchor_signature(self._capture_top_anchor())
         best_candidate = None
         best_diff = 1e9
         for _ in range(_PRODUCTION_TOP_SCROLL_MAX_ATTEMPTS):
             if not self.actions.scroll_client_wheel(point, 120, delay=self._scroll_delay_seconds()):
                 raise ValueError("production_scroll_up_failed")
-            current = self._capture_rect("PRODUCTION_CARD1")
-            if current is None:
+            current_anchor_image = self._capture_top_anchor()
+            if current_anchor_image is None:
                 raise ValueError("missing_rect:PRODUCTION_CARD1")
-            current_anchor = self._top_anchor_frame(current)
-            status = self._card_status(current)
+            current_anchor = self._top_anchor_signature(current_anchor_image)
+            is_structural_top = self._is_structural_top_anchor(current_anchor_image)
             if previous is not None:
                 diff = self._image_mean_abs_diff(previous, current_anchor)
-                if status == "card" and diff < best_diff:
+                if is_structural_top and diff < best_diff:
                     best_diff = diff
-                    best_candidate = current
-                if diff <= 1.0 and status == "card":
-                    return current
+                    best_candidate = current_anchor_image
+                if is_structural_top and diff <= _TOP_ANCHOR_STABLE_DIFF_MAX:
+                    return current_anchor_image
             previous = current_anchor
-        if best_candidate is not None and best_diff <= 1.3 and self._extract_output_icon(best_candidate) is not None:
+        if best_candidate is not None and best_diff <= _TOP_ANCHOR_BEST_DIFF_MAX:
             return best_candidate
-        raise ValueError("production_top_latch_failed")
+        raise ValueError(f"production_top_latch_failed:{best_diff:.3f}")
 
     def _scroll_back_to_top(self, *, top_anchor: Image.Image | None) -> None:
         if top_anchor is None:
             return
         point = self._wheel_point()
-        top_anchor_frame = self._top_anchor_frame(top_anchor)
+        top_anchor_frame = self._top_anchor_signature(top_anchor)
         best_diff = 1e9
         best_current = None
+        current = self._capture_top_anchor()
+        current_frame = self._top_anchor_signature(current)
+        current_diff = self._image_mean_abs_diff(top_anchor_frame, current_frame)
+        last_structural_frame = current_frame if self._is_structural_top_anchor(current) else None
+        if current_diff <= _TOP_ANCHOR_STABLE_DIFF_MAX and last_structural_frame is not None:
+            return
+        if current is not None and last_structural_frame is not None:
+            best_diff = current_diff
+            best_current = current
         for _ in range(_PRODUCTION_TOP_SCROLL_MAX_ATTEMPTS):
-            current = self._capture_rect("PRODUCTION_CARD1")
-            current_frame = self._top_anchor_frame(current)
-            diff = self._image_mean_abs_diff(top_anchor_frame, current_frame)
-            if current is not None and diff < best_diff:
-                best_diff = diff
-                best_current = current
-            if diff <= 1.0:
-                return
             if not self.actions.scroll_client_wheel(point, 120, delay=self._scroll_delay_seconds()):
                 break
-        current = self._capture_rect("PRODUCTION_CARD1")
-        current_diff = self._image_mean_abs_diff(top_anchor_frame, self._top_anchor_frame(current))
-        if current_diff <= 1.0:
+            current = self._capture_top_anchor()
+            current_frame = self._top_anchor_signature(current)
+            diff = self._image_mean_abs_diff(top_anchor_frame, current_frame)
+            is_structural_top = self._is_structural_top_anchor(current)
+            if current is not None and is_structural_top and diff < best_diff:
+                best_diff = diff
+                best_current = current
+            if is_structural_top and diff <= _TOP_ANCHOR_STABLE_DIFF_MAX:
+                return
+            if (
+                is_structural_top
+                and last_structural_frame is not None
+                and self._image_mean_abs_diff(last_structural_frame, current_frame) <= _TOP_ANCHOR_STABLE_DIFF_MAX
+            ):
+                return
+            last_structural_frame = current_frame if is_structural_top else None
+        current = self._capture_top_anchor()
+        current_diff = self._image_mean_abs_diff(top_anchor_frame, self._top_anchor_signature(current))
+        if current_diff <= _TOP_ANCHOR_STABLE_DIFF_MAX and self._is_structural_top_anchor(current):
             return
-        if best_current is not None and best_diff <= 1.2 and self._card_status(best_current) == "card":
+        if best_current is not None and best_diff <= _TOP_ANCHOR_BEST_DIFF_MAX:
             return
-        if current_diff > 1.0:
-            raise ValueError("production_scroll_up_failed")
+        if current_diff > _TOP_ANCHOR_STABLE_DIFF_MAX:
+            raise ValueError(f"production_scroll_up_failed:{current_diff:.3f}:{best_diff:.3f}")
 
     def read_cards(
         self,

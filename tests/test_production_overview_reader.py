@@ -580,17 +580,20 @@ def test_production_overview_reader_generates_named_tooltip_probe_points():
 def test_production_overview_reader_computes_local_tooltip_crop_box():
     crop_box = ProductionOverviewReader._tooltip_crop_box((60, 80, 95, 120), card_size=(240, 295))
 
-    assert crop_box == (99, 70, 213, 108)
+    assert crop_box == (92, 76, 197, 117)
 
 
-def test_production_overview_reader_generates_ordered_tooltip_crop_candidates():
+def test_production_overview_reader_derives_tooltip_search_region_from_icon_bounds():
+    search_region = ProductionOverviewReader._tooltip_search_region((60, 80, 95, 120), card_size=(240, 295))
+
+    assert search_region == (92, 76, 197, 117)
+
+
+def test_production_overview_reader_wraps_search_region_as_single_candidate():
     candidates = ProductionOverviewReader._tooltip_crop_candidates((60, 80, 95, 120), card_size=(240, 295))
 
     assert [(candidate.crop_id, candidate.box) for candidate in candidates] == [
-        ("right_of_icon", (99, 70, 213, 108)),
-        ("upper_right", (87, 46, 205, 86)),
-        ("above_icon", (42, 42, 177, 84)),
-        ("right_centered", (97, 80, 215, 118)),
+        ("search_region", (92, 76, 197, 117)),
     ]
 
 
@@ -623,11 +626,11 @@ def test_production_overview_reader_stops_on_first_valid_tooltip_label(monkeypat
 
     assert output_name == "Lead Bar"
     assert backend == "tooltip_probe_bar_fake"
-    assert len(reader.actions.clicks) == 1
+    assert len(reader.actions.clicks) == 2
     assert reader.perception.calls == 2
 
 
-def test_production_overview_reader_stops_on_first_valid_tooltip_crop(monkeypatch):
+def test_production_overview_reader_stops_on_first_valid_tooltip_probe(monkeypatch):
     card = Image.new("RGB", (240, 295), "#112244")
     frame = Image.new("RGB", (240, 295), "#223355")
     crop_sequence = []
@@ -663,7 +666,7 @@ def test_production_overview_reader_stops_on_first_valid_tooltip_crop(monkeypatc
 
     assert output_name == "Lead Bar"
     assert backend == "tooltip_probe_bar_fake"
-    assert crop_sequence == [(54, 38), (66, 40)]
+    assert crop_sequence == [(186, 66), (186, 66)]
 
 
 def test_production_overview_reader_rejects_invalid_tooltip_text():
@@ -722,7 +725,7 @@ def test_production_overview_reader_rejects_invalid_tooltip_text_across_all_crop
             templates={"Lead Bar": Image.new("RGB", (10, 10), "gray")},
         )
 
-    assert reader.perception.calls == 12
+    assert reader.perception.calls == 3
 
 
 def test_production_overview_reader_fails_closed_without_screen_capture():
@@ -764,11 +767,11 @@ def test_production_overview_reader_writes_tooltip_probe_audit_artifacts(tmp_pat
         output_dir=tmp_path,
     )
 
-    assert len(attempts) == 24
-    assert attempts[0]["label"] == "smelt_PRODUCTION_CARD1_bar_center_right_of_icon"
+    assert len(attempts) == 6
+    assert attempts[0]["label"] == "smelt_PRODUCTION_CARD1_bar_center_search_region"
     assert attempts[0]["icon_box"] == (120, 71, 182, 136)
-    assert attempts[0]["tooltip_crop_box"] == (186, 61, 240, 99)
-    assert attempts[0]["crop_id"] == "right_of_icon"
+    assert attempts[0]["tooltip_crop_box"] == (54, 64, 240, 130)
+    assert attempts[0]["crop_id"] == "search_region"
     assert Path(str(attempts[0]["overlay_artifact"])).exists()
     assert Path(str(attempts[0]["tooltip_artifact"])).exists()
 

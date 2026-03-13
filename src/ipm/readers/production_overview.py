@@ -30,11 +30,15 @@ _ACTIVE_FILL_CONFIDENT_MIN = 0.05
 _PRODUCTION_TOP_SCROLL_MAX_ATTEMPTS = 3
 _RECIPE_BUTTON_REL_X = 0.375
 _RECIPE_BUTTON_REL_Y = 0.807
-_TOOLTIP_PROBE_POINTS = (
-    ("center", (0.50, 0.50)),
-    ("upper_left", (0.34, 0.34)),
-    ("lower_right", (0.66, 0.66)),
+_TOOLTIP_PROBE_OFFSETS = (
+    ("center", (0.00, 0.00)),
+    ("upper_left", (-0.15, -0.15)),
+    ("lower_right", (0.15, 0.15)),
 )
+_TOOLTIP_SEARCH_OVERLAP_X = 0.10
+_TOOLTIP_SEARCH_RIGHT_EXTENT = 3.0
+_TOOLTIP_SEARCH_TOP_FROM_CENTER = 0.60
+_TOOLTIP_SEARCH_BOTTOM_FROM_CENTER = 0.40
 _SMELT_RECIPE_SCROLL_DELTA = -120
 _SMELT_RECIPE_SLOT_LAYOUT_PAGE0 = (
     ((49, 207, 96, 260), (105, 209, 165, 262)),
@@ -342,31 +346,34 @@ class ProductionOverviewReader:
         x1, y1, x2, y2 = icon_box
         width = max(1, x2 - x1)
         height = max(1, y2 - y1)
+        center_x = x1 + (width / 2.0)
+        center_y = y1 + (height / 2.0)
         return tuple(
             _TooltipProbePoint(
                 point_id=point_id,
                 point=(
-                    int(x1 + round(width * x_fraction)),
-                    int(y1 + round(height * y_fraction)),
+                    int(round(center_x + (width * x_offset))),
+                    int(round(center_y + (height * y_offset))),
                 ),
             )
-            for point_id, (x_fraction, y_fraction) in _TOOLTIP_PROBE_POINTS
+            for point_id, (x_offset, y_offset) in _TOOLTIP_PROBE_OFFSETS
         )
 
     @staticmethod
     def _tooltip_crop_box(icon_box: tuple[int, int, int, int], *, card_size: tuple[int, int]) -> tuple[int, int, int, int]:
-        return ProductionOverviewReader._tooltip_crop_candidates(icon_box, card_size=card_size)[0].box
+        return ProductionOverviewReader._tooltip_search_region(icon_box, card_size=card_size)
 
     @staticmethod
-    def _tooltip_crop_candidates(
+    def _tooltip_search_region(
         icon_box: tuple[int, int, int, int],
         *,
         card_size: tuple[int, int],
-    ) -> tuple[_TooltipCropCandidate, ...]:
+    ) -> tuple[int, int, int, int]:
         card_width, card_height = card_size
         x1, y1, x2, y2 = icon_box
+        icon_width = max(1, x2 - x1)
         icon_height = max(1, y2 - y1)
-        center_y = y1 + (icon_height // 2)
+        center_y = y1 + (icon_height / 2.0)
 
         def _clip(left: int, top: int, right: int, bottom: int) -> tuple[int, int, int, int]:
             clipped_left = max(0, min(card_width - 1, int(left)))
@@ -375,22 +382,34 @@ class ProductionOverviewReader:
             clipped_bottom = max(clipped_top + 1, min(card_height, int(bottom)))
             return (clipped_left, clipped_top, clipped_right, clipped_bottom)
 
+        region_width = max(icon_width + 1, int(round(icon_width * _TOOLTIP_SEARCH_RIGHT_EXTENT)))
+        region_height = max(icon_height + 1, int(round(icon_height * (_TOOLTIP_SEARCH_TOP_FROM_CENTER + _TOOLTIP_SEARCH_BOTTOM_FROM_CENTER))))
+        left = int(round(x2 - (icon_width * _TOOLTIP_SEARCH_OVERLAP_X)))
+        top = int(round(center_y - (icon_height * _TOOLTIP_SEARCH_TOP_FROM_CENTER)))
+        right = left + region_width
+        bottom = top + region_height
+
+        if right > card_width:
+            overflow = right - card_width
+            left -= overflow
+            right -= overflow
+        if bottom > card_height:
+            overflow = bottom - card_height
+            top -= overflow
+            bottom -= overflow
+
+        return _clip(left, top, right, bottom)
+
+    @staticmethod
+    def _tooltip_crop_candidates(
+        icon_box: tuple[int, int, int, int],
+        *,
+        card_size: tuple[int, int],
+    ) -> tuple[_TooltipCropCandidate, ...]:
         return (
             _TooltipCropCandidate(
-                crop_id="right_of_icon",
-                box=_clip(x2 + 4, y1 - 10, x2 + 118, y1 + 28),
-            ),
-            _TooltipCropCandidate(
-                crop_id="upper_right",
-                box=_clip(x2 - 8, y1 - 34, x2 + 110, y1 + 6),
-            ),
-            _TooltipCropCandidate(
-                crop_id="above_icon",
-                box=_clip(x1 - 18, y1 - 38, x2 + 82, y1 + 4),
-            ),
-            _TooltipCropCandidate(
-                crop_id="right_centered",
-                box=_clip(x2 + 2, center_y - 20, x2 + 120, center_y + 18),
+                crop_id="search_region",
+                box=ProductionOverviewReader._tooltip_search_region(icon_box, card_size=card_size),
             ),
         )
 

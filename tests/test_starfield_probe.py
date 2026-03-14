@@ -1,3 +1,5 @@
+import inspect
+
 from PIL import Image
 
 from ipm.starfield_cache import CachedStarfieldPlanetNode, load_starfield_planet_nodes, upsert_starfield_planet_node
@@ -18,9 +20,21 @@ from ipm.config import RuntimeConfig
 
 class FakeCapture:
     def __init__(self, image):
-        self.image = image
+        if isinstance(image, list):
+            self.images = list(image)
+            self.image = self.images[-1] if self.images else None
+        else:
+            self.images = None
+            self.image = image
+        self.calls = 0
 
     def capture_screen(self):
+        self.calls += 1
+        if self.images is None:
+            return self.image
+        if not self.images:
+            return None
+        self.image = self.images.pop(0)
         return self.image
 
 
@@ -509,43 +523,79 @@ def test_starfield_probe_falls_back_to_full_read_when_probe_read_is_not_confirme
     assert reader.calls == 1
 
 
-def test_starfield_probe_small_candidate_does_not_offset_retry_after_confirmation_failure():
+def test_starfield_probe_retries_once_after_primary_confirmation_failure():
+    capture = FakeCapture(
+        [
+            _scene_image(ship_center=(160, 120), objects=((270, 120, 12),)),
+            _scene_image(ship_center=(160, 120), objects=((300, 120, 12),)),
+        ]
+    )
     actions = FakeActions()
-    reader = FakeReader(PlanetPanelState(title="Ship Speed", mining_cost=300, speed_cost=400))
+    reader = FakeReader(
+        [
+            PlanetPanelState(title="Ship Speed", mining_cost=300, speed_cost=400),
+            PlanetPanelState(planet_id=1, title="1. BALOR", mining_level=2, mining_cost=233, speed_cost=106),
+        ]
+    )
     result = try_open_nearest_starfield_candidate(
-        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((270, 120, 12),))),
+        capture=capture,
+        actions=actions,
+        reader=reader,
+        panel_is_readable=_panel_is_readable,
+        panel_is_confirmed=PlanetsTask._probe_panel_confirmed,
+        settle_seconds=0.0,
+    )
+    assert result.ok is True
+    assert result.reason == "open_confirmed"
+    assert result.target_point == (300, 120)
+    assert capture.calls == 2
+    assert actions.calls == [
+        ("click_client_point", (270, 120), 0.0),
+        ("click_client_point", (300, 120), 0.0),
+    ]
+
+
+def test_starfield_probe_second_confirmation_failure_fails_loud_after_single_rediscovery():
+    capture = FakeCapture(
+        [
+            _scene_image(ship_center=(160, 120), objects=((270, 120, 12),)),
+            _scene_image(ship_center=(160, 120), objects=((300, 120, 12),)),
+        ]
+    )
+    actions = FakeActions()
+    reader = FakeReader(
+        [
+            PlanetPanelState(title="Ship Speed", mining_cost=300, speed_cost=400),
+            PlanetPanelState(title="Ship Speed", mining_cost=301, speed_cost=401),
+        ]
+    )
+    result = try_open_nearest_starfield_candidate(
+        capture=capture,
         actions=actions,
         reader=reader,
         panel_is_readable=_panel_is_readable,
         panel_is_confirmed=lambda panel: bool(panel and panel.title == "1. BALOR"),
         settle_seconds=0.0,
-        small_candidate_fallback_max_radius=20,
-        small_candidate_fallback_offset_x=10,
-        small_candidate_fallback_offset_y=0,
     )
     assert result.ok is False
     assert result.reason == "panel_not_confirmed"
-    assert result.target_point == (270, 120)
-    assert actions.calls == [("click_client_point", (270, 120), 0.0)]
+    assert result.target_point == (300, 120)
+    assert capture.calls == 2
+    assert actions.calls == [
+        ("click_client_point", (270, 120), 0.0),
+        ("click_client_point", (300, 120), 0.0),
+    ]
 
 
-def test_starfield_probe_large_candidate_does_not_attempt_fallback_click():
-    actions = FakeActions()
-    reader = FakeReader(PlanetPanelState(title="Ship Speed", mining_cost=300, speed_cost=400))
-    result = try_open_nearest_starfield_candidate(
-        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((270, 120, 24),))),
-        actions=actions,
-        reader=reader,
-        panel_is_readable=_panel_is_readable,
-        panel_is_confirmed=lambda panel: bool(panel and panel.title == "1. BALOR"),
-        settle_seconds=0.0,
-        small_candidate_fallback_max_radius=20,
-        small_candidate_fallback_offset_x=10,
-        small_candidate_fallback_offset_y=0,
-    )
-    assert result.ok is False
-    assert result.reason == "panel_not_confirmed"
-    assert actions.calls == [("click_client_point", (270, 120), 0.0)]
+def test_starfield_probe_active_surface_removes_small_candidate_fallback_config():
+    starfield_config = RuntimeConfig().starfield
+    assert not hasattr(starfield_config, "small_candidate_fallback_max_radius")
+    assert not hasattr(starfield_config, "small_candidate_fallback_offset_x")
+    assert not hasattr(starfield_config, "small_candidate_fallback_offset_y")
+    parameters = inspect.signature(try_open_starfield_candidate_by_rank).parameters
+    assert "small_candidate_fallback_max_radius" not in parameters
+    assert "small_candidate_fallback_offset_x" not in parameters
+    assert "small_candidate_fallback_offset_y" not in parameters
 
 
 def test_starfield_probe_fails_closed_on_portrait_geometry_mismatch():

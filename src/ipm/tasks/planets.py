@@ -430,15 +430,6 @@ class PlanetsTask:
                 ),
                 candidate_min_radius=int(getattr(self.config.starfield, "candidate_min_radius", 6)),
                 candidate_min_area=int(getattr(self.config.starfield, "candidate_min_area", 80)),
-                small_candidate_fallback_max_radius=int(
-                    getattr(self.config.starfield, "small_candidate_fallback_max_radius", 20)
-                ),
-                small_candidate_fallback_offset_x=int(
-                    getattr(self.config.starfield, "small_candidate_fallback_offset_x", 10)
-                ),
-                small_candidate_fallback_offset_y=int(
-                    getattr(self.config.starfield, "small_candidate_fallback_offset_y", 0)
-                ),
                 min_ship_bbox_width=int(getattr(self.config.starfield, "min_ship_bbox_width", 20)),
                 min_ship_bbox_height=int(getattr(self.config.starfield, "min_ship_bbox_height", 8)),
                 min_ship_area=int(getattr(self.config.starfield, "min_ship_area", 150)),

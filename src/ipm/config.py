@@ -143,9 +143,6 @@ class StarfieldConfig:
     ship_cluster_exclusion_y_margin: int = 110
     candidate_min_radius: int = 6
     candidate_min_area: int = 80
-    small_candidate_fallback_max_radius: int = 20
-    small_candidate_fallback_offset_x: int = 10
-    small_candidate_fallback_offset_y: int = 0
     min_ship_bbox_width: int = 20
     min_ship_bbox_height: int = 8
     min_ship_area: int = 150

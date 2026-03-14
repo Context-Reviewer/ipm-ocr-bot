@@ -150,9 +150,6 @@ def try_open_starfield_candidate_by_rank(
     candidate_min_radius: int = 6,
     candidate_min_area: int = 80,
     ship_candidate_exclusion_radius: int = 0,
-    small_candidate_fallback_max_radius: int = 0,
-    small_candidate_fallback_offset_x: int = 0,
-    small_candidate_fallback_offset_y: int = 0,
     min_ship_bbox_width: int = 20,
     min_ship_bbox_height: int = 8,
     min_ship_area: int = 150,
@@ -166,6 +163,10 @@ def try_open_starfield_candidate_by_rank(
 ) -> StarfieldProbeResult:
     probe_read = getattr(reader, "read_for_probe", None)
     click_point = getattr(actions, "click_client_point", None)
+    recoverable_confirmation_failures = frozenset(
+        {"panel_not_visible", "panel_not_confirmed", "panel_identity_mismatch"}
+    )
+    immediate_click_failures = frozenset({"click_failed"})
 
     def _attempt_confirmation(
         point: tuple[int, int],
@@ -204,6 +205,151 @@ def try_open_starfield_candidate_by_rank(
         if not panel_is_readable(first_panel):
             return False, "panel_not_visible", first_panel
         return False, "panel_not_confirmed", first_panel
+
+    def _cache_result(
+        *,
+        scene: StarfieldScene,
+        panel: object,
+        target_point: tuple[int, int],
+        radius: int,
+        scene_image: Image.Image,
+    ) -> None:
+        if not planet_node_cache_path:
+            return
+        raw_title = str(getattr(panel, "title", "")).strip() or None
+        ship_center = (
+            (scene.ship_center_x, scene.ship_center_y)
+            if scene.ship_center_x is not None and scene.ship_center_y is not None
+            else None
+        )
+        anchor_offset = (
+            (target_point[0] - ship_center[0], target_point[1] - ship_center[1]) if ship_center is not None else None
+        )
+        cache_saved = upsert_starfield_planet_node(
+            planet_node_cache_path,
+            CachedStarfieldPlanetNode(
+                target_rank=target_rank,
+                point=target_point,
+                image_size=(int(scene_image.size[0]), int(scene_image.size[1])),
+                orientation=image_orientation(scene_image.size),
+                radius=radius,
+                planet_id=(
+                    int(getattr(panel, "planet_id"))
+                    if getattr(panel, "planet_id", None) is not None
+                    else None
+                ),
+                title=raw_title,
+                canonical_title=normalize_planet_name(raw_title),
+                ship_center=ship_center,
+                anchor_offset=anchor_offset,
+            ),
+        )
+        print(f"[PLANET_NAV] cache_update rank={target_rank} saved={'true' if cache_saved else 'false'}")
+
+    def _detect_and_open(scene_image: Image.Image, *, attempt_label: str) -> StarfieldProbeResult:
+        attempt_orientation = image_orientation(scene_image.size)
+        if normalized_expected_orientation is not None and attempt_orientation != normalized_expected_orientation:
+            print(
+                "[PLANET_NAV] "
+                f"open_failed reason=geometry_mismatch expected={normalized_expected_orientation} actual={attempt_orientation}"
+            )
+            return StarfieldProbeResult(ok=False, reason="geometry_mismatch", rank=target_rank)
+        resolved_viewport = resolve_starfield_viewport(scene_image.size, scene_viewport)
+        scene = detect_starfield_scene(
+            scene_image,
+            viewport=resolved_viewport,
+            exclusion_zones=resolve_starfield_exclusion_zones(
+                scene_image.size, resolved_viewport, scene_exclusion_zones
+            ),
+            ship_template_enabled=ship_template_enabled,
+            ship_template_path=ship_template_path,
+            ship_template_scales=ship_template_scales,
+            ship_template_threshold=ship_template_threshold,
+            ship_template_use_edges=ship_template_use_edges,
+            ship_template_allow_fallback=ship_template_allow_fallback,
+            ship_template_image=ship_template_image,
+            ship_template_search_left_margin=ship_template_search_left_margin,
+            ship_template_search_top_margin=ship_template_search_top_margin,
+            ship_template_search_right_margin=ship_template_search_right_margin,
+            ship_template_search_bottom_margin=ship_template_search_bottom_margin,
+            ship_template_min_scale=ship_template_min_scale,
+            ship_template_min_width=ship_template_min_width,
+            ship_template_min_height=ship_template_min_height,
+            ship_template_min_area=ship_template_min_area,
+            ship_exclusion_margin=ship_exclusion_margin,
+            ship_candidate_exclusion_radius=ship_candidate_exclusion_radius,
+            ship_cluster_exclusion_x_margin=ship_cluster_exclusion_x_margin,
+            ship_cluster_exclusion_y_margin=ship_cluster_exclusion_y_margin,
+            candidate_min_radius=candidate_min_radius,
+            candidate_min_area=candidate_min_area,
+            min_ship_bbox_width=min_ship_bbox_width,
+            min_ship_bbox_height=min_ship_bbox_height,
+            min_ship_area=min_ship_area,
+            heuristic_fallback_min_bbox_width=heuristic_fallback_min_bbox_width,
+            heuristic_fallback_min_bbox_height=heuristic_fallback_min_bbox_height,
+            heuristic_fallback_min_area=heuristic_fallback_min_area,
+            max_ship_radius=max_ship_radius,
+            max_ship_bbox_width=max_ship_bbox_width,
+            max_ship_bbox_height=max_ship_bbox_height,
+            max_ship_area_ratio=max_ship_area_ratio,
+        )
+        ship_debug = format_ship_detection_debug(scene)
+        if ship_debug:
+            print(ship_debug)
+        for ship_followup in format_ship_detection_followup_debug(scene):
+            print(ship_followup)
+        print(format_starfield_scene_debug(scene))
+        for rejected in scene.rejected_candidate_debug:
+            print(rejected)
+        if scene.ship_reject_reason is not None:
+            print(f"[PLANET_NAV] open_failed reason=ship_implausible detail={scene.ship_reject_reason}")
+            return StarfieldProbeResult(ok=False, reason="ship_implausible", scene=scene, rank=target_rank)
+        if scene.ship_center_x is None or scene.ship_center_y is None:
+            print("[PLANET_NAV] open_failed reason=ship_missing")
+            return StarfieldProbeResult(ok=False, reason="ship_missing", scene=scene, rank=target_rank)
+        ranked = get_ranked_planet_candidates(scene)
+        if not ranked:
+            print("[PLANET_NAV] open_failed reason=no_candidate")
+            return StarfieldProbeResult(ok=False, reason="no_candidate", scene=scene, rank=target_rank)
+        if target_rank > len(ranked):
+            print(f"[PLANET_NAV] open_failed reason=candidate_rank_unavailable rank={target_rank}")
+            return StarfieldProbeResult(ok=False, reason="candidate_rank_unavailable", scene=scene, rank=target_rank)
+        target = ranked[target_rank - 1]
+        if save_annotation:
+            saved_path = maybe_save_starfield_annotation(scene_image, scene, output_dir=annotation_dir)
+            if saved_path:
+                print(f"[STARFIELD] saved_annotation={saved_path}")
+        target_point = (target.center_x, target.center_y)
+        print(
+            f"[PLANET_NAV] target=({target.center_x},{target.center_y}) "
+            f"rank={target_rank} radius={target.radius}"
+        )
+        ok, reason, panel = _attempt_confirmation(target_point, attempt_label=attempt_label, radius=target.radius)
+        if not ok:
+            return StarfieldProbeResult(
+                ok=False,
+                reason=reason,
+                scene=scene,
+                target_point=target_point,
+                rank=target_rank,
+                panel=panel,
+            )
+        _cache_result(
+            scene=scene,
+            panel=panel,
+            target_point=target_point,
+            radius=target.radius,
+            scene_image=scene_image,
+        )
+        print(f"[PLANET_NAV] open_confirmed via={attempt_label}")
+        return StarfieldProbeResult(
+            ok=True,
+            reason="open_confirmed",
+            scene=scene,
+            target_point=target_point,
+            rank=target_rank,
+            panel=panel,
+        )
 
     if callable(starfield_ready_check):
         precheck = starfield_ready_check()
@@ -263,163 +409,35 @@ def try_open_starfield_candidate_by_rank(
             print(f"[PLANET_NAV] cache_recover rank={target_rank} reason={cached_reason_text}")
         else:
             print(f"[PLANET_NAV] cache_skip rank={target_rank} reason={cache_reason}")
-    resolved_viewport = resolve_starfield_viewport(working_image.size, scene_viewport)
-    scene = detect_starfield_scene(
-        working_image,
-        viewport=resolved_viewport,
-        exclusion_zones=resolve_starfield_exclusion_zones(working_image.size, resolved_viewport, scene_exclusion_zones),
-        ship_template_enabled=ship_template_enabled,
-        ship_template_path=ship_template_path,
-        ship_template_scales=ship_template_scales,
-        ship_template_threshold=ship_template_threshold,
-        ship_template_use_edges=ship_template_use_edges,
-        ship_template_allow_fallback=ship_template_allow_fallback,
-        ship_template_image=ship_template_image,
-        ship_template_search_left_margin=ship_template_search_left_margin,
-        ship_template_search_top_margin=ship_template_search_top_margin,
-        ship_template_search_right_margin=ship_template_search_right_margin,
-        ship_template_search_bottom_margin=ship_template_search_bottom_margin,
-        ship_template_min_scale=ship_template_min_scale,
-        ship_template_min_width=ship_template_min_width,
-        ship_template_min_height=ship_template_min_height,
-        ship_template_min_area=ship_template_min_area,
-        ship_exclusion_margin=ship_exclusion_margin,
-        ship_candidate_exclusion_radius=ship_candidate_exclusion_radius,
-        ship_cluster_exclusion_x_margin=ship_cluster_exclusion_x_margin,
-        ship_cluster_exclusion_y_margin=ship_cluster_exclusion_y_margin,
-        candidate_min_radius=candidate_min_radius,
-        candidate_min_area=candidate_min_area,
-        min_ship_bbox_width=min_ship_bbox_width,
-        min_ship_bbox_height=min_ship_bbox_height,
-        min_ship_area=min_ship_area,
-        heuristic_fallback_min_bbox_width=heuristic_fallback_min_bbox_width,
-        heuristic_fallback_min_bbox_height=heuristic_fallback_min_bbox_height,
-        heuristic_fallback_min_area=heuristic_fallback_min_area,
-        max_ship_radius=max_ship_radius,
-        max_ship_bbox_width=max_ship_bbox_width,
-        max_ship_bbox_height=max_ship_bbox_height,
-        max_ship_area_ratio=max_ship_area_ratio,
-    )
-    ship_debug = format_ship_detection_debug(scene)
-    if ship_debug:
-        print(ship_debug)
-    for ship_followup in format_ship_detection_followup_debug(scene):
-        print(ship_followup)
-    print(format_starfield_scene_debug(scene))
-    for rejected in scene.rejected_candidate_debug:
-        print(rejected)
-    if scene.ship_reject_reason is not None:
-        print(f"[PLANET_NAV] open_failed reason=ship_implausible detail={scene.ship_reject_reason}")
-        return StarfieldProbeResult(ok=False, reason="ship_implausible", scene=scene, rank=target_rank)
-    if scene.ship_center_x is None or scene.ship_center_y is None:
-        print("[PLANET_NAV] open_failed reason=ship_missing")
-        return StarfieldProbeResult(ok=False, reason="ship_missing", scene=scene, rank=target_rank)
-    ranked = get_ranked_planet_candidates(scene)
-    if not ranked:
-        print("[PLANET_NAV] open_failed reason=no_candidate")
-        return StarfieldProbeResult(ok=False, reason="no_candidate", scene=scene, rank=target_rank)
-    if target_rank > len(ranked):
-        print(f"[PLANET_NAV] open_failed reason=candidate_rank_unavailable rank={target_rank}")
-        return StarfieldProbeResult(ok=False, reason="candidate_rank_unavailable", scene=scene, rank=target_rank)
-    target = ranked[target_rank - 1]
-    if save_annotation:
-        saved_path = maybe_save_starfield_annotation(working_image, scene, output_dir=annotation_dir)
-        if saved_path:
-            print(f"[STARFIELD] saved_annotation={saved_path}")
-    target_point = (target.center_x, target.center_y)
-    print(
-        f"[PLANET_NAV] target=({target.center_x},{target.center_y}) "
-        f"rank={target_rank} radius={target.radius}"
-    )
-    ok, reason, panel = _attempt_confirmation(target_point, attempt_label="primary", radius=target.radius)
-    if not ok and reason == "click_failed":
-        print("[PLANET_NAV] open_failed reason=click_failed")
-        return StarfieldProbeResult(
-            ok=False,
-            reason="click_failed",
-            scene=scene,
-            target_point=target_point,
-            rank=target_rank,
+    primary_result = _detect_and_open(working_image, attempt_label="primary")
+    if primary_result.ok:
+        return primary_result
+    if primary_result.reason in immediate_click_failures:
+        print(f"[PLANET_NAV] open_failed reason={primary_result.reason}")
+        return primary_result
+    if primary_result.reason not in recoverable_confirmation_failures:
+        return primary_result
+    capture_screen = getattr(capture, "capture_screen", None)
+    if not callable(capture_screen):
+        print(
+            "[PLANET_NAV] "
+            f"open_failed reason={primary_result.reason} recovery_unavailable=capture_unavailable"
         )
-    if not ok and reason == "click_failed":
-        print("[PLANET_NAV] open_failed reason=click_failed")
-        return StarfieldProbeResult(
-            ok=False,
-            reason="click_failed",
-            scene=scene,
-            target_point=target_point,
-            rank=target_rank,
-            panel=panel,
+        return primary_result
+    recovery_image = capture_screen()
+    if recovery_image is None:
+        print(
+            "[PLANET_NAV] "
+            f"open_failed reason={primary_result.reason} recovery_unavailable=capture_unavailable"
         )
-    if not ok and reason == "panel_not_visible":
-        print("[PLANET_NAV] open_failed reason=panel_not_visible")
-        return StarfieldProbeResult(
-            ok=False,
-            reason="panel_not_visible",
-            scene=scene,
-            target_point=target_point,
-            rank=target_rank,
-            panel=panel,
-        )
-    if not ok and reason == "panel_not_confirmed":
-        print("[PLANET_NAV] open_failed reason=panel_not_confirmed")
-        return StarfieldProbeResult(
-            ok=False,
-            reason="panel_not_confirmed",
-            scene=scene,
-            target_point=target_point,
-            rank=target_rank,
-            panel=panel,
-        )
-    if not ok and reason == "panel_identity_mismatch":
-        print("[PLANET_NAV] open_failed reason=panel_identity_mismatch")
-        return StarfieldProbeResult(
-            ok=False,
-            reason="panel_identity_mismatch",
-            scene=scene,
-            target_point=target_point,
-            rank=target_rank,
-            panel=panel,
-        )
-    if planet_node_cache_path:
-        raw_title = str(getattr(panel, "title", "")).strip() or None
-        ship_center = (
-            (scene.ship_center_x, scene.ship_center_y)
-            if scene.ship_center_x is not None and scene.ship_center_y is not None
-            else None
-        )
-        anchor_offset = (
-            (target_point[0] - ship_center[0], target_point[1] - ship_center[1]) if ship_center is not None else None
-        )
-        cache_saved = upsert_starfield_planet_node(
-            planet_node_cache_path,
-            CachedStarfieldPlanetNode(
-                target_rank=target_rank,
-                point=target_point,
-                image_size=(int(working_image.size[0]), int(working_image.size[1])),
-                orientation=current_orientation,
-                radius=target.radius,
-                planet_id=(
-                    int(getattr(panel, "planet_id"))
-                    if getattr(panel, "planet_id", None) is not None
-                    else None
-                ),
-                title=raw_title,
-                canonical_title=normalize_planet_name(raw_title),
-                ship_center=ship_center,
-                anchor_offset=anchor_offset,
-            ),
-        )
-        print(f"[PLANET_NAV] cache_update rank={target_rank} saved={'true' if cache_saved else 'false'}")
-    print("[PLANET_NAV] open_confirmed via=primary")
-    return StarfieldProbeResult(
-        ok=True,
-        reason="open_confirmed",
-        scene=scene,
-        target_point=target_point,
-        rank=target_rank,
-        panel=panel,
-    )
+        return primary_result
+    print(f"[PLANET_NAV] rediscover attempt=1 prior_reason={primary_result.reason}")
+    recovery_result = _detect_and_open(recovery_image, attempt_label="rediscovery")
+    if recovery_result.ok:
+        return recovery_result
+    if recovery_result.reason in recoverable_confirmation_failures or recovery_result.reason in immediate_click_failures:
+        print(f"[PLANET_NAV] open_failed reason={recovery_result.reason}")
+    return recovery_result
 
 
 def discover_nearest_starfield_planet(

@@ -9,7 +9,7 @@ import ipm.app as app_module
 from ipm.app import Application, UIStateCheck, prepare_run_artifact_dir, save_run_frame
 from ipm.config import RuntimeConfig
 from ipm.focus import FocusResult
-from ipm.starfield_probe import PlanetDiscoveryResult
+from ipm.starfield_probe import PlanetDiscoveryResult, StarfieldCacheSummary, StarfieldProbeResult
 
 
 class RecordingActions:
@@ -330,6 +330,38 @@ def test_run_starfield_probe_logs_focus_diagnostics_when_focus_unavailable(monke
     assert "target_title='BlueStacks App Player'" in captured
 
 
+def test_run_starfield_probe_logs_cache_run_rollup(monkeypatch, tmp_path, capsys):
+    app = _make_app(tmp_path)
+    monkeypatch.setattr(
+        app_module,
+        "ensure_focus_result",
+        lambda focus: FocusResult(
+            ok=True,
+            reason="already_focused",
+            active_title_before="BlueStacks App Player",
+            active_title_after="BlueStacks App Player",
+        ),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "try_open_nearest_starfield_candidate",
+        lambda **kwargs: StarfieldProbeResult(
+            ok=True,
+            reason="open_confirmed",
+            target_point=(123, 456),
+            cache_summary=StarfieldCacheSummary(exact_hit_accepted=1, cache_refresh_saved=1),
+        ),
+    )
+
+    result = app.run_starfield_probe_once()
+
+    captured = capsys.readouterr().out
+    assert result == 0
+    assert captured.count("[STARFIELD_CACHE_RUN] boundary=starfield_probe_command") == 1
+    assert "exact_hit_accepted=1" in captured
+    assert "cache_refresh_saved=1" in captured
+
+
 def test_run_discovery_logs_focus_diagnostics_when_focus_unavailable(monkeypatch, tmp_path, capsys):
     app = _make_app(tmp_path)
     monkeypatch.setattr(
@@ -356,6 +388,51 @@ def test_run_discovery_logs_focus_diagnostics_when_focus_unavailable(monkeypatch
     assert "active_title_after='Microsoft Edge'" in captured
     assert "activation_status=foreground_mismatch" in captured
     assert "target_title='BlueStacks App Player'" in captured
+
+
+def test_run_discovery_logs_cache_run_rollup(monkeypatch, tmp_path, capsys):
+    app = _make_app(tmp_path)
+    frame = Image.new("RGB", (600, 1100), "black")
+    monkeypatch.setattr(
+        app_module,
+        "ensure_focus_result",
+        lambda focus: FocusResult(
+            ok=True,
+            reason="already_focused",
+            active_title_before="BlueStacks App Player",
+            active_title_after="BlueStacks App Player",
+        ),
+    )
+    monkeypatch.setattr(app_module, "prepare_run_artifact_dir", lambda **kwargs: tmp_path)
+    monkeypatch.setattr(Application, "_capture_frame", lambda self: frame)
+    monkeypatch.setattr(Application, "_recover_starfield", lambda self, *, stage, image: (True, image))
+
+    def fake_discover(**kwargs):
+        return PlanetDiscoveryResult(
+            ok=True,
+            reason="ok",
+            target_rank=1,
+            target_point=(123, 456),
+            planet_title_raw="DHOLEN",
+            planet_title_canonical="Dholen",
+            returned_to_starfield=True,
+            cache_summary=StarfieldCacheSummary(
+                remap_attempted=1,
+                remap_accepted=1,
+                cache_refresh_saved=1,
+            ),
+        )
+
+    monkeypatch.setattr(app_module, "discover_starfield_planet_by_rank", fake_discover)
+
+    result = app.run_discover_planet_rank_once(1)
+
+    captured = capsys.readouterr().out
+    assert result == 0
+    assert captured.count("[STARFIELD_CACHE_RUN] boundary=planet_discovery_command") == 1
+    assert "remap_attempted=1" in captured
+    assert "remap_accepted=1" in captured
+    assert "cache_refresh_saved=1" in captured
 
 
 def test_run_discovery_reports_return_failure_when_post_open_recovery_fails(monkeypatch, tmp_path):

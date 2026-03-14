@@ -21,6 +21,8 @@ from .runtime import RuntimeState
 from .scheduler import ScheduledTask, Scheduler
 from .starfield_probe import (
     discover_starfield_planet_by_rank,
+    format_starfield_cache_run_rollup,
+    merge_starfield_cache_summaries,
     try_open_nearest_starfield_candidate,
 )
 from .state_reader import GameStateReader
@@ -263,6 +265,9 @@ class Application:
             max_ship_bbox_height=int(getattr(self.config.starfield, "max_ship_bbox_height", 90)),
             max_ship_area_ratio=float(getattr(self.config.starfield, "max_ship_area_ratio", 0.08)),
         )
+        summary = merge_starfield_cache_summaries(probe.cache_summary)
+        if summary is not None:
+            print(format_starfield_cache_run_rollup(summary, boundary="starfield_probe_command"))
         target = (
             f" target=({probe.target_point[0]},{probe.target_point[1]})"
             if probe.target_point is not None
@@ -571,6 +576,9 @@ class Application:
             max_ship_bbox_height=int(getattr(self.config.starfield, "max_ship_bbox_height", 90)),
             max_ship_area_ratio=float(getattr(self.config.starfield, "max_ship_area_ratio", 0.08)),
         )
+        summary = merge_starfield_cache_summaries(discovery.cache_summary)
+        if summary is not None:
+            print(format_starfield_cache_run_rollup(summary, boundary="planet_discovery_command"))
         target = (
             f" target=({discovery.target_point[0]},{discovery.target_point[1]})"
             if discovery.target_point is not None

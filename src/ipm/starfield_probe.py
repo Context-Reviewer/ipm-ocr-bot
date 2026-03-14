@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from PIL import Image
@@ -34,6 +34,7 @@ class StarfieldProbeResult:
     target_point: tuple[int, int] | None = None
     rank: int | None = None
     panel: object | None = None
+    cache_summary: StarfieldCacheSummary | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -49,6 +50,78 @@ class PlanetDiscoveryResult:
     returned_to_starfield: bool = False
     panel: object | None = None
     scene: StarfieldScene | None = None
+    cache_summary: StarfieldCacheSummary | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class StarfieldCacheSummary:
+    exact_hit_accepted: int = 0
+    exact_hit_rejected: int = 0
+    remap_attempted: int = 0
+    remap_accepted: int = 0
+    remap_skipped: int = 0
+    fallback_to_rediscovery: int = 0
+    cache_refresh_saved: int = 0
+    remap_skipped_reasons: tuple[tuple[str, int], ...] = field(default_factory=tuple)
+
+
+def merge_starfield_cache_summaries(*summaries: StarfieldCacheSummary | None) -> StarfieldCacheSummary | None:
+    merged: dict[str, int] = {
+        "exact_hit_accepted": 0,
+        "exact_hit_rejected": 0,
+        "remap_attempted": 0,
+        "remap_accepted": 0,
+        "remap_skipped": 0,
+        "fallback_to_rediscovery": 0,
+        "cache_refresh_saved": 0,
+    }
+    remap_skip_reasons: dict[str, int] = {}
+    seen = False
+    for summary in summaries:
+        if summary is None:
+            continue
+        seen = True
+        merged["exact_hit_accepted"] += int(summary.exact_hit_accepted)
+        merged["exact_hit_rejected"] += int(summary.exact_hit_rejected)
+        merged["remap_attempted"] += int(summary.remap_attempted)
+        merged["remap_accepted"] += int(summary.remap_accepted)
+        merged["remap_skipped"] += int(summary.remap_skipped)
+        merged["fallback_to_rediscovery"] += int(summary.fallback_to_rediscovery)
+        merged["cache_refresh_saved"] += int(summary.cache_refresh_saved)
+        for reason, count in summary.remap_skipped_reasons:
+            normalized_reason = str(reason or "").strip()
+            if not normalized_reason:
+                continue
+            remap_skip_reasons[normalized_reason] = remap_skip_reasons.get(normalized_reason, 0) + int(count)
+    if not seen:
+        return None
+    return StarfieldCacheSummary(
+        exact_hit_accepted=merged["exact_hit_accepted"],
+        exact_hit_rejected=merged["exact_hit_rejected"],
+        remap_attempted=merged["remap_attempted"],
+        remap_accepted=merged["remap_accepted"],
+        remap_skipped=merged["remap_skipped"],
+        fallback_to_rediscovery=merged["fallback_to_rediscovery"],
+        cache_refresh_saved=merged["cache_refresh_saved"],
+        remap_skipped_reasons=tuple(sorted(remap_skip_reasons.items())),
+    )
+
+
+def format_starfield_cache_run_rollup(summary: StarfieldCacheSummary, *, boundary: str) -> str:
+    parts = [
+        "[STARFIELD_CACHE_RUN]",
+        f"boundary={boundary}",
+        f"exact_hit_accepted={summary.exact_hit_accepted}",
+        f"exact_hit_rejected={summary.exact_hit_rejected}",
+        f"remap_attempted={summary.remap_attempted}",
+        f"remap_accepted={summary.remap_accepted}",
+        f"remap_skipped={summary.remap_skipped}",
+        f"fallback_to_rediscovery={summary.fallback_to_rediscovery}",
+        f"cache_refresh_saved={summary.cache_refresh_saved}",
+    ]
+    for reason, count in summary.remap_skipped_reasons:
+        parts.append(f"remap_skipped_{reason}={count}")
+    return " ".join(parts)
 
 
 def resolve_starfield_viewport(
@@ -214,6 +287,37 @@ def try_open_starfield_candidate_by_rank(
             parts.append(f"remap_skipped_{reason}={remap_skip_reason_counts[reason]}")
         print(" ".join(parts))
 
+    def _current_cache_summary() -> StarfieldCacheSummary:
+        return StarfieldCacheSummary(
+            exact_hit_accepted=cache_event_counts.get("exact_hit_accepted", 0),
+            exact_hit_rejected=cache_event_counts.get("exact_hit_rejected", 0),
+            remap_attempted=cache_event_counts.get("remap_attempted", 0),
+            remap_accepted=cache_event_counts.get("remap_accepted", 0),
+            remap_skipped=cache_event_counts.get("remap_skipped", 0),
+            fallback_to_rediscovery=cache_event_counts.get("fallback_to_rediscovery", 0),
+            cache_refresh_saved=cache_event_counts.get("cache_refresh_saved", 0),
+            remap_skipped_reasons=tuple(sorted(remap_skip_reason_counts.items())),
+        )
+
+    def _probe_result(
+        *,
+        ok: bool,
+        reason: str,
+        scene: StarfieldScene | None = None,
+        target_point: tuple[int, int] | None = None,
+        rank: int | None = None,
+        panel: object | None = None,
+    ) -> StarfieldProbeResult:
+        return StarfieldProbeResult(
+            ok=ok,
+            reason=reason,
+            scene=scene,
+            target_point=target_point,
+            rank=rank,
+            panel=panel,
+            cache_summary=_current_cache_summary(),
+        )
+
     def _attempt_confirmation(
         point: tuple[int, int],
         *,
@@ -365,21 +469,21 @@ def try_open_starfield_candidate_by_rank(
             scene = detected_scene if detected_scene is not None else _detect_scene(scene_image)
         except ValueError as exc:
             print(f"[PLANET_NAV] open_failed reason={exc}")
-            return StarfieldProbeResult(ok=False, reason="geometry_mismatch", rank=target_rank)
+            return _probe_result(ok=False, reason="geometry_mismatch", rank=target_rank)
         _log_scene_debug(scene)
         if scene.ship_reject_reason is not None:
             print(f"[PLANET_NAV] open_failed reason=ship_implausible detail={scene.ship_reject_reason}")
-            return StarfieldProbeResult(ok=False, reason="ship_implausible", scene=scene, rank=target_rank)
+            return _probe_result(ok=False, reason="ship_implausible", scene=scene, rank=target_rank)
         if scene.ship_center_x is None or scene.ship_center_y is None:
             print("[PLANET_NAV] open_failed reason=ship_missing")
-            return StarfieldProbeResult(ok=False, reason="ship_missing", scene=scene, rank=target_rank)
+            return _probe_result(ok=False, reason="ship_missing", scene=scene, rank=target_rank)
         ranked = get_ranked_planet_candidates(scene)
         if not ranked:
             print("[PLANET_NAV] open_failed reason=no_candidate")
-            return StarfieldProbeResult(ok=False, reason="no_candidate", scene=scene, rank=target_rank)
+            return _probe_result(ok=False, reason="no_candidate", scene=scene, rank=target_rank)
         if target_rank > len(ranked):
             print(f"[PLANET_NAV] open_failed reason=candidate_rank_unavailable rank={target_rank}")
-            return StarfieldProbeResult(ok=False, reason="candidate_rank_unavailable", scene=scene, rank=target_rank)
+            return _probe_result(ok=False, reason="candidate_rank_unavailable", scene=scene, rank=target_rank)
         target = ranked[target_rank - 1]
         if save_annotation:
             saved_path = maybe_save_starfield_annotation(scene_image, scene, output_dir=annotation_dir)
@@ -392,7 +496,7 @@ def try_open_starfield_candidate_by_rank(
         )
         ok, reason, panel = _attempt_confirmation(target_point, attempt_label=attempt_label, radius=target.radius)
         if not ok:
-            return StarfieldProbeResult(
+            return _probe_result(
                 ok=False,
                 reason=reason,
                 scene=scene,
@@ -409,7 +513,7 @@ def try_open_starfield_candidate_by_rank(
             refresh_source=attempt_label,
         )
         print(f"[PLANET_NAV] open_confirmed via={attempt_label}")
-        return StarfieldProbeResult(
+        return _probe_result(
             ok=True,
             reason="open_confirmed",
             scene=scene,
@@ -427,17 +531,17 @@ def try_open_starfield_candidate_by_rank(
                 else:
                     reason, panel = str(precheck), None
                 print(f"[PLANET_NAV] open_failed reason={reason}")
-                return StarfieldProbeResult(ok=False, reason=str(reason), rank=target_rank, panel=panel)
+                return _probe_result(ok=False, reason=str(reason), rank=target_rank, panel=panel)
         working_image = image
         if working_image is None:
             capture_screen = getattr(capture, "capture_screen", None)
             if not callable(capture_screen):
                 print("[PLANET_NAV] open_failed reason=capture_unavailable")
-                return StarfieldProbeResult(ok=False, reason="capture_unavailable", rank=target_rank)
+                return _probe_result(ok=False, reason="capture_unavailable", rank=target_rank)
             working_image = capture_screen()
             if working_image is None:
                 print("[PLANET_NAV] open_failed reason=capture_unavailable")
-                return StarfieldProbeResult(ok=False, reason="capture_unavailable", rank=target_rank)
+                return _probe_result(ok=False, reason="capture_unavailable", rank=target_rank)
         current_orientation = image_orientation(working_image.size)
         normalized_expected_orientation = str(expected_orientation or "").strip().lower() or None
         if normalized_expected_orientation is not None and current_orientation != normalized_expected_orientation:
@@ -445,7 +549,7 @@ def try_open_starfield_candidate_by_rank(
                 "[PLANET_NAV] "
                 f"open_failed reason=geometry_mismatch expected={normalized_expected_orientation} actual={current_orientation}"
             )
-            return StarfieldProbeResult(ok=False, reason="geometry_mismatch", rank=target_rank)
+            return _probe_result(ok=False, reason="geometry_mismatch", rank=target_rank)
         cached_entry = load_starfield_planet_nodes(planet_node_cache_path).get(target_rank)
         remap_scene: StarfieldScene | None = None
         cache_fallback_source: str | None = None
@@ -471,7 +575,7 @@ def try_open_starfield_candidate_by_rank(
                 if cached_ok:
                     _log_cache_event("exact_hit_accepted", point=cached_entry.point)
                     print("[PLANET_NAV] open_confirmed via=cache")
-                    return StarfieldProbeResult(
+                    return _probe_result(
                         ok=True,
                         reason="open_confirmed",
                         target_point=cached_entry.point,
@@ -533,7 +637,7 @@ def try_open_starfield_candidate_by_rank(
                                 )
                                 _log_cache_event("remap_accepted", point=remapped_point)
                                 print("[PLANET_NAV] open_confirmed via=cache_remap")
-                                return StarfieldProbeResult(
+                                return _probe_result(
                                     ok=True,
                                     reason="open_confirmed",
                                     target_point=remapped_point,
@@ -608,11 +712,13 @@ def discover_starfield_planet_by_rank(
     **kwargs,
 ) -> PlanetDiscoveryResult:
     probe = try_open_starfield_candidate_by_rank(target_rank=target_rank, **kwargs)
+    def _discovery_result(**fields) -> PlanetDiscoveryResult:
+        return PlanetDiscoveryResult(cache_summary=probe.cache_summary, **fields)
     ship_center = None
     if probe.scene is not None and probe.scene.ship_center_x is not None and probe.scene.ship_center_y is not None:
         ship_center = (probe.scene.ship_center_x, probe.scene.ship_center_y)
     if not probe.ok:
-        return PlanetDiscoveryResult(
+        return _discovery_result(
             ok=False,
             reason=probe.reason,
             target_rank=probe.rank,
@@ -624,7 +730,7 @@ def discover_starfield_planet_by_rank(
     raw_title = str(getattr(probe.panel, "title", "")).strip() or None
     canonical_title = normalize_planet_name(raw_title)
     if not canonical_title:
-        return PlanetDiscoveryResult(
+        return _discovery_result(
             ok=False,
             reason="planet_identity_unresolved",
             target_rank=probe.rank,
@@ -636,7 +742,7 @@ def discover_starfield_planet_by_rank(
         )
     planet_id = getattr(probe.panel, "planet_id", None)
     returned_to_starfield = bool(callable(return_to_starfield) and return_to_starfield())
-    return PlanetDiscoveryResult(
+    return _discovery_result(
         ok=True,
         reason="ok" if returned_to_starfield else "return_to_starfield_failed",
         target_rank=probe.rank,

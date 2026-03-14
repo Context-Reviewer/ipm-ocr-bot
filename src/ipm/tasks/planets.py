@@ -5,7 +5,11 @@ from dataclasses import asdict, dataclass, field
 from ..decisions import choose_planet_upgrade
 from ..domain_data import normalize_planet_name
 from ..galaxy import PlanetNavigator
-from ..starfield_probe import try_open_nearest_starfield_candidate
+from ..starfield_probe import (
+    format_starfield_cache_run_rollup,
+    merge_starfield_cache_summaries,
+    try_open_nearest_starfield_candidate,
+)
 from .base import TaskResult
 
 
@@ -386,6 +390,19 @@ class PlanetsTask:
         probe_enabled = bool(getattr(getattr(self.config, "starfield", None), "enable_click_probe", False))
         self._run_observability = self._new_run_observability(probe_enabled=probe_enabled)
         previous_observer = getattr(self.reader, "observer", None) if observer_supported else None
+        starfield_cache_summaries = []
+        starfield_cache_rollup_logged = False
+
+        def _log_starfield_cache_rollup() -> None:
+            nonlocal starfield_cache_rollup_logged
+            if starfield_cache_rollup_logged:
+                return
+            starfield_cache_rollup_logged = True
+            summary = merge_starfield_cache_summaries(*starfield_cache_summaries)
+            if summary is None:
+                return
+            print(format_starfield_cache_run_rollup(summary, boundary="planets_task"))
+
         if observer_supported:
             self.reader.observer = self._observe_reader_event
         if probe_enabled:
@@ -447,6 +464,8 @@ class PlanetsTask:
                 max_ship_bbox_height=int(getattr(self.config.starfield, "max_ship_bbox_height", 90)),
                 max_ship_area_ratio=float(getattr(self.config.starfield, "max_ship_area_ratio", 0.08)),
             )
+            if probe.cache_summary is not None:
+                starfield_cache_summaries.append(probe.cache_summary)
             self._run_observability["probe"]["ok"] = bool(probe.ok)
             self._run_observability["probe"]["reason"] = probe.reason
             if not probe.ok:
@@ -469,6 +488,7 @@ class PlanetsTask:
                         },
                     )
                 finally:
+                    _log_starfield_cache_rollup()
                     if observer_supported:
                         self.reader.observer = previous_observer
                     self._run_observability = None
@@ -500,6 +520,7 @@ class PlanetsTask:
                     },
                 )
             finally:
+                _log_starfield_cache_rollup()
                 if observer_supported:
                     self.reader.observer = previous_observer
                 self._run_observability = None
@@ -619,6 +640,7 @@ class PlanetsTask:
                 },
             )
         finally:
+            _log_starfield_cache_rollup()
             if observer_supported:
                 self.reader.observer = previous_observer
             self._run_observability = None

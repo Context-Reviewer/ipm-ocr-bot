@@ -1,6 +1,7 @@
 from dataclasses import replace
 
 from ipm.config import PolicyConfig, RuntimeConfig
+from ipm.starfield_probe import StarfieldCacheSummary, StarfieldProbeResult
 from ipm.state import GameSnapshot, OreRowState, PlanetPanelState, SellDialogState
 from ipm.tasks import OresTask, PlanetsTask
 
@@ -134,6 +135,12 @@ class ObservablePlanetReader(FakePlanetReader):
 def _runtime_config_without_starfield_probe(*, policy=None):
     runtime_config = RuntimeConfig(policy=policy or PolicyConfig())
     runtime_config.starfield.enable_click_probe = False
+    return runtime_config
+
+
+def _runtime_config_with_starfield_probe(*, policy=None):
+    runtime_config = RuntimeConfig(policy=policy or PolicyConfig())
+    runtime_config.starfield.enable_click_probe = True
     return runtime_config
 
 
@@ -989,6 +996,66 @@ def test_planets_task_uses_current_planet_snapshot_for_confirmation_and_refreshe
     assert state_reader.read_planet_snapshot_calls == 0
     assert state_reader.read_current_planet_snapshot_calls == 1
     assert state_reader.read_cash_snapshot_calls == 2
+
+
+def test_planets_task_logs_starfield_cache_run_rollup(monkeypatch, capsys):
+    before = GameSnapshot(
+        cash=500,
+        current_planet=PlanetPanelState(
+            planet_id=1,
+            title="1. BALOR",
+            mining_level=8,
+            speed_level=6,
+            cargo_level=7,
+            mining_cost=400,
+            speed_cost=200,
+            cargo_cost=250,
+        ),
+    )
+    after = GameSnapshot(
+        cash=300,
+        current_planet=PlanetPanelState(
+            planet_id=1,
+            title="1. BALOR",
+            mining_level=8,
+            speed_level=7,
+            cargo_level=7,
+            mining_cost=400,
+            speed_cost=240,
+            cargo_cost=250,
+        ),
+    )
+    monkeypatch.setattr("ipm.tasks.planets.PlanetNavigator", FakeNavigator)
+    monkeypatch.setattr(
+        "ipm.tasks.planets.try_open_nearest_starfield_candidate",
+        lambda **kwargs: StarfieldProbeResult(
+            ok=True,
+            reason="open_confirmed",
+            rank=1,
+            panel=before.current_planet,
+            cache_summary=StarfieldCacheSummary(
+                exact_hit_accepted=1,
+                fallback_to_rediscovery=1,
+                remap_skipped=1,
+                remap_skipped_reasons=(("orientation_mismatch", 1),),
+            ),
+        ),
+    )
+    actions = FakeActions()
+    reader = FakePlanetReader([before.current_planet, before.current_planet, before.current_planet])
+    task = PlanetsTask(
+        reader=reader,
+        state_reader=FakeStateReader([before, after]),
+        actions=actions,
+        config=_runtime_config_with_starfield_probe(policy=PolicyConfig(max_planet_upgrades_per_task=1)),
+    )
+    result = task.run()
+    output = capsys.readouterr().out
+    assert result.ok is True
+    assert output.count("[STARFIELD_CACHE_RUN] boundary=planets_task") == 1
+    assert "exact_hit_accepted=1" in output
+    assert "fallback_to_rediscovery=1" in output
+    assert "remap_skipped_orientation_mismatch=1" in output
 
 
 def test_planets_task_reuses_scan_final_panel_as_current_panel_when_cash_snapshot_has_no_panel(monkeypatch):

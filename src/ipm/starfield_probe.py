@@ -162,13 +162,25 @@ def try_open_starfield_candidate_by_rank(
     max_ship_bbox_height: int = 90,
     max_ship_area_ratio: float = 0.08,
 ) -> StarfieldProbeResult:
+    target_rank = max(1, int(target_rank))
     probe_read = getattr(reader, "read_for_probe", None)
     click_point = getattr(actions, "click_client_point", None)
     cache_event_counts: dict[str, int] = {}
+    remap_skip_reason_counts: dict[str, int] = {}
+    cache_summary_logged = False
     recoverable_confirmation_failures = frozenset(
         {"panel_not_visible", "panel_not_confirmed", "panel_identity_mismatch"}
     )
     immediate_click_failures = frozenset({"click_failed"})
+    cache_summary_events = (
+        "exact_hit_accepted",
+        "exact_hit_rejected",
+        "remap_attempted",
+        "remap_accepted",
+        "remap_skipped",
+        "fallback_to_rediscovery",
+        "cache_refresh_saved",
+    )
 
     def _format_cache_field(value: object) -> str:
         if isinstance(value, bool):
@@ -180,11 +192,26 @@ def try_open_starfield_candidate_by_rank(
     def _log_cache_event(event: str, **fields: object) -> None:
         count = cache_event_counts.get(event, 0) + 1
         cache_event_counts[event] = count
+        if event == "remap_skipped":
+            reason = str(fields.get("reason", "") or "").strip() or "unspecified"
+            remap_skip_reason_counts[reason] = remap_skip_reason_counts.get(reason, 0) + 1
         parts = ["[STARFIELD_CACHE]", f"event={event}", f"count={count}", f"rank={target_rank}"]
         for key, value in fields.items():
             if value is None:
                 continue
             parts.append(f"{key}={_format_cache_field(value)}")
+        print(" ".join(parts))
+
+    def _log_cache_summary() -> None:
+        nonlocal cache_summary_logged
+        if cache_summary_logged:
+            return
+        cache_summary_logged = True
+        parts = ["[STARFIELD_CACHE_SUMMARY]", f"rank={target_rank}"]
+        for event in cache_summary_events:
+            parts.append(f"{event}={cache_event_counts.get(event, 0)}")
+        for reason in sorted(remap_skip_reason_counts):
+            parts.append(f"remap_skipped_{reason}={remap_skip_reason_counts[reason]}")
         print(" ".join(parts))
 
     def _attempt_confirmation(
@@ -391,177 +418,179 @@ def try_open_starfield_candidate_by_rank(
             panel=panel,
         )
 
-    if callable(starfield_ready_check):
-        precheck = starfield_ready_check()
-        if precheck:
-            if isinstance(precheck, tuple):
-                reason, panel = precheck
-            else:
-                reason, panel = str(precheck), None
-            print(f"[PLANET_NAV] open_failed reason={reason}")
-            return StarfieldProbeResult(ok=False, reason=str(reason), rank=max(1, int(target_rank)), panel=panel)
-    target_rank = max(1, int(target_rank))
-    working_image = image
-    if working_image is None:
-        capture_screen = getattr(capture, "capture_screen", None)
-        if not callable(capture_screen):
-            print("[PLANET_NAV] open_failed reason=capture_unavailable")
-            return StarfieldProbeResult(ok=False, reason="capture_unavailable", rank=target_rank)
-        working_image = capture_screen()
+    try:
+        if callable(starfield_ready_check):
+            precheck = starfield_ready_check()
+            if precheck:
+                if isinstance(precheck, tuple):
+                    reason, panel = precheck
+                else:
+                    reason, panel = str(precheck), None
+                print(f"[PLANET_NAV] open_failed reason={reason}")
+                return StarfieldProbeResult(ok=False, reason=str(reason), rank=target_rank, panel=panel)
+        working_image = image
         if working_image is None:
-            print("[PLANET_NAV] open_failed reason=capture_unavailable")
-            return StarfieldProbeResult(ok=False, reason="capture_unavailable", rank=target_rank)
-    current_orientation = image_orientation(working_image.size)
-    normalized_expected_orientation = str(expected_orientation or "").strip().lower() or None
-    if normalized_expected_orientation is not None and current_orientation != normalized_expected_orientation:
-        print(
-            "[PLANET_NAV] "
-            f"open_failed reason=geometry_mismatch expected={normalized_expected_orientation} actual={current_orientation}"
-        )
-        return StarfieldProbeResult(ok=False, reason="geometry_mismatch", rank=target_rank)
-    cached_entry = load_starfield_planet_nodes(planet_node_cache_path).get(target_rank)
-    remap_scene: StarfieldScene | None = None
-    cache_fallback_source: str | None = None
-    cache_fallback_reason: str | None = None
-    if cached_entry is not None:
-        cache_reason = cached_node_validation_reason(
-            cached_entry,
-            image_size=working_image.size,
-            expected_orientation=normalized_expected_orientation,
-        )
-        if cache_reason is None:
-            _log_cache_event("exact_hit_validation_passed", point=cached_entry.point)
+            capture_screen = getattr(capture, "capture_screen", None)
+            if not callable(capture_screen):
+                print("[PLANET_NAV] open_failed reason=capture_unavailable")
+                return StarfieldProbeResult(ok=False, reason="capture_unavailable", rank=target_rank)
+            working_image = capture_screen()
+            if working_image is None:
+                print("[PLANET_NAV] open_failed reason=capture_unavailable")
+                return StarfieldProbeResult(ok=False, reason="capture_unavailable", rank=target_rank)
+        current_orientation = image_orientation(working_image.size)
+        normalized_expected_orientation = str(expected_orientation or "").strip().lower() or None
+        if normalized_expected_orientation is not None and current_orientation != normalized_expected_orientation:
             print(
                 "[PLANET_NAV] "
-                f"cache_hit rank={target_rank} point=({cached_entry.point[0]},{cached_entry.point[1]})"
+                f"open_failed reason=geometry_mismatch expected={normalized_expected_orientation} actual={current_orientation}"
             )
-            cached_ok, cached_reason_text, cached_panel = _attempt_confirmation(
-                cached_entry.point,
-                attempt_label="cached",
-                radius=cached_entry.radius,
-                expected_cache_entry=cached_entry,
+            return StarfieldProbeResult(ok=False, reason="geometry_mismatch", rank=target_rank)
+        cached_entry = load_starfield_planet_nodes(planet_node_cache_path).get(target_rank)
+        remap_scene: StarfieldScene | None = None
+        cache_fallback_source: str | None = None
+        cache_fallback_reason: str | None = None
+        if cached_entry is not None:
+            cache_reason = cached_node_validation_reason(
+                cached_entry,
+                image_size=working_image.size,
+                expected_orientation=normalized_expected_orientation,
             )
-            if cached_ok:
-                _log_cache_event("exact_hit_accepted", point=cached_entry.point)
-                print("[PLANET_NAV] open_confirmed via=cache")
-                return StarfieldProbeResult(
-                    ok=True,
-                    reason="open_confirmed",
-                    target_point=cached_entry.point,
-                    rank=target_rank,
-                    panel=cached_panel,
+            if cache_reason is None:
+                _log_cache_event("exact_hit_validation_passed", point=cached_entry.point)
+                print(
+                    "[PLANET_NAV] "
+                    f"cache_hit rank={target_rank} point=({cached_entry.point[0]},{cached_entry.point[1]})"
                 )
-            _log_cache_event("exact_hit_rejected", reason=cached_reason_text, point=cached_entry.point)
-            cache_fallback_source = "exact_hit_rejected"
-            cache_fallback_reason = cached_reason_text
-            print(f"[PLANET_NAV] cache_recover rank={target_rank} reason={cached_reason_text}")
-        else:
-            remap_attempted = False
-            remap_reasons = {"image_size_mismatch", "point_out_of_bounds"}
-            entry_orientation = str(cached_entry.orientation or "").strip().lower()
-            if entry_orientation != current_orientation:
-                _log_cache_event("remap_skipped", reason="orientation_mismatch")
-                cache_fallback_source = "remap_skipped"
-                cache_fallback_reason = "orientation_mismatch"
-            if cache_reason in remap_reasons and entry_orientation == current_orientation:
-                remap_attempted = True
-                _log_cache_event("remap_attempted", trigger=cache_reason)
-                try:
-                    remap_scene = _detect_scene(working_image)
-                except ValueError as exc:
-                    _log_cache_event("remap_skipped", reason="geometry_mismatch")
-                    cache_fallback_source = "remap_skipped"
-                    cache_fallback_reason = "geometry_mismatch"
-                    print(f"[PLANET_NAV] cache_remap_skip rank={target_rank} reason={exc}")
-                else:
-                    ship_center = None
-                    if remap_scene.ship_center_x is not None and remap_scene.ship_center_y is not None:
-                        ship_center = (remap_scene.ship_center_x, remap_scene.ship_center_y)
-                    remapped_point, remap_reason = remap_cached_node_point(
-                        cached_entry,
-                        image_size=working_image.size,
-                        ship_center=ship_center,
+                cached_ok, cached_reason_text, cached_panel = _attempt_confirmation(
+                    cached_entry.point,
+                    attempt_label="cached",
+                    radius=cached_entry.radius,
+                    expected_cache_entry=cached_entry,
+                )
+                if cached_ok:
+                    _log_cache_event("exact_hit_accepted", point=cached_entry.point)
+                    print("[PLANET_NAV] open_confirmed via=cache")
+                    return StarfieldProbeResult(
+                        ok=True,
+                        reason="open_confirmed",
+                        target_point=cached_entry.point,
+                        rank=target_rank,
+                        panel=cached_panel,
                     )
-                    if remapped_point is not None:
-                        _log_cache_event("remap_validated", point=remapped_point, ship_center=ship_center)
-                        print(
-                            "[PLANET_NAV] "
-                            f"cache_remap rank={target_rank} point=({remapped_point[0]},{remapped_point[1]}) "
-                            f"ship=({ship_center[0]},{ship_center[1]})"
-                        )
-                        remapped_ok, remapped_reason, remapped_panel = _attempt_confirmation(
-                            remapped_point,
-                            attempt_label="cache-remap",
-                            radius=cached_entry.radius,
-                            expected_cache_entry=cached_entry,
-                        )
-                        if remapped_ok:
-                            _cache_result(
-                                scene=remap_scene,
-                                panel=remapped_panel,
-                                target_point=remapped_point,
-                                radius=cached_entry.radius,
-                                scene_image=working_image,
-                                refresh_source="cache-remap",
-                            )
-                            _log_cache_event("remap_accepted", point=remapped_point)
-                            print("[PLANET_NAV] open_confirmed via=cache_remap")
-                            return StarfieldProbeResult(
-                                ok=True,
-                                reason="open_confirmed",
-                                target_point=remapped_point,
-                                rank=target_rank,
-                                panel=remapped_panel,
-                            )
-                        _log_cache_event("remap_confirmation_failed", reason=remapped_reason, point=remapped_point)
-                        cache_fallback_source = "remap_confirmation_failed"
-                        cache_fallback_reason = remapped_reason
-                        print(f"[PLANET_NAV] cache_recover rank={target_rank} reason={remapped_reason}")
-                    else:
-                        _log_cache_event("remap_skipped", reason=remap_reason)
+                _log_cache_event("exact_hit_rejected", reason=cached_reason_text, point=cached_entry.point)
+                cache_fallback_source = "exact_hit_rejected"
+                cache_fallback_reason = cached_reason_text
+                print(f"[PLANET_NAV] cache_recover rank={target_rank} reason={cached_reason_text}")
+            else:
+                remap_attempted = False
+                remap_reasons = {"image_size_mismatch", "point_out_of_bounds"}
+                entry_orientation = str(cached_entry.orientation or "").strip().lower()
+                if entry_orientation != current_orientation:
+                    _log_cache_event("remap_skipped", reason="orientation_mismatch")
+                    cache_fallback_source = "remap_skipped"
+                    cache_fallback_reason = "orientation_mismatch"
+                if cache_reason in remap_reasons and entry_orientation == current_orientation:
+                    remap_attempted = True
+                    _log_cache_event("remap_attempted", trigger=cache_reason)
+                    try:
+                        remap_scene = _detect_scene(working_image)
+                    except ValueError as exc:
+                        _log_cache_event("remap_skipped", reason="geometry_mismatch")
                         cache_fallback_source = "remap_skipped"
-                        cache_fallback_reason = remap_reason
-                        print(f"[PLANET_NAV] cache_remap_skip rank={target_rank} reason={remap_reason}")
-            if not remap_attempted:
-                if cache_fallback_source is None:
-                    cache_fallback_source = "cache_skip"
-                    cache_fallback_reason = cache_reason
-                print(f"[PLANET_NAV] cache_skip rank={target_rank} reason={cache_reason}")
-    if cache_fallback_source is not None:
-        _log_cache_event("fallback_to_rediscovery", source=cache_fallback_source, reason=cache_fallback_reason)
-    primary_result = _detect_and_open(
-        working_image,
-        attempt_label="primary",
-        detected_scene=remap_scene,
-    )
-    if primary_result.ok:
-        return primary_result
-    if primary_result.reason in immediate_click_failures:
-        print(f"[PLANET_NAV] open_failed reason={primary_result.reason}")
-        return primary_result
-    if primary_result.reason not in recoverable_confirmation_failures:
-        return primary_result
-    capture_screen = getattr(capture, "capture_screen", None)
-    if not callable(capture_screen):
-        print(
-            "[PLANET_NAV] "
-            f"open_failed reason={primary_result.reason} recovery_unavailable=capture_unavailable"
+                        cache_fallback_reason = "geometry_mismatch"
+                        print(f"[PLANET_NAV] cache_remap_skip rank={target_rank} reason={exc}")
+                    else:
+                        ship_center = None
+                        if remap_scene.ship_center_x is not None and remap_scene.ship_center_y is not None:
+                            ship_center = (remap_scene.ship_center_x, remap_scene.ship_center_y)
+                        remapped_point, remap_reason = remap_cached_node_point(
+                            cached_entry,
+                            image_size=working_image.size,
+                            ship_center=ship_center,
+                        )
+                        if remapped_point is not None:
+                            _log_cache_event("remap_validated", point=remapped_point, ship_center=ship_center)
+                            print(
+                                "[PLANET_NAV] "
+                                f"cache_remap rank={target_rank} point=({remapped_point[0]},{remapped_point[1]}) "
+                                f"ship=({ship_center[0]},{ship_center[1]})"
+                            )
+                            remapped_ok, remapped_reason, remapped_panel = _attempt_confirmation(
+                                remapped_point,
+                                attempt_label="cache-remap",
+                                radius=cached_entry.radius,
+                                expected_cache_entry=cached_entry,
+                            )
+                            if remapped_ok:
+                                _cache_result(
+                                    scene=remap_scene,
+                                    panel=remapped_panel,
+                                    target_point=remapped_point,
+                                    radius=cached_entry.radius,
+                                    scene_image=working_image,
+                                    refresh_source="cache-remap",
+                                )
+                                _log_cache_event("remap_accepted", point=remapped_point)
+                                print("[PLANET_NAV] open_confirmed via=cache_remap")
+                                return StarfieldProbeResult(
+                                    ok=True,
+                                    reason="open_confirmed",
+                                    target_point=remapped_point,
+                                    rank=target_rank,
+                                    panel=remapped_panel,
+                                )
+                            _log_cache_event("remap_confirmation_failed", reason=remapped_reason, point=remapped_point)
+                            cache_fallback_source = "remap_confirmation_failed"
+                            cache_fallback_reason = remapped_reason
+                            print(f"[PLANET_NAV] cache_recover rank={target_rank} reason={remapped_reason}")
+                        else:
+                            _log_cache_event("remap_skipped", reason=remap_reason)
+                            cache_fallback_source = "remap_skipped"
+                            cache_fallback_reason = remap_reason
+                            print(f"[PLANET_NAV] cache_remap_skip rank={target_rank} reason={remap_reason}")
+                if not remap_attempted:
+                    if cache_fallback_source is None:
+                        cache_fallback_source = "cache_skip"
+                        cache_fallback_reason = cache_reason
+                    print(f"[PLANET_NAV] cache_skip rank={target_rank} reason={cache_reason}")
+        if cache_fallback_source is not None:
+            _log_cache_event("fallback_to_rediscovery", source=cache_fallback_source, reason=cache_fallback_reason)
+        primary_result = _detect_and_open(
+            working_image,
+            attempt_label="primary",
+            detected_scene=remap_scene,
         )
-        return primary_result
-    recovery_image = capture_screen()
-    if recovery_image is None:
-        print(
-            "[PLANET_NAV] "
-            f"open_failed reason={primary_result.reason} recovery_unavailable=capture_unavailable"
-        )
-        return primary_result
-    print(f"[PLANET_NAV] rediscover attempt=1 prior_reason={primary_result.reason}")
-    recovery_result = _detect_and_open(recovery_image, attempt_label="rediscovery")
-    if recovery_result.ok:
+        if primary_result.ok:
+            return primary_result
+        if primary_result.reason in immediate_click_failures:
+            print(f"[PLANET_NAV] open_failed reason={primary_result.reason}")
+            return primary_result
+        if primary_result.reason not in recoverable_confirmation_failures:
+            return primary_result
+        capture_screen = getattr(capture, "capture_screen", None)
+        if not callable(capture_screen):
+            print(
+                "[PLANET_NAV] "
+                f"open_failed reason={primary_result.reason} recovery_unavailable=capture_unavailable"
+            )
+            return primary_result
+        recovery_image = capture_screen()
+        if recovery_image is None:
+            print(
+                "[PLANET_NAV] "
+                f"open_failed reason={primary_result.reason} recovery_unavailable=capture_unavailable"
+            )
+            return primary_result
+        print(f"[PLANET_NAV] rediscover attempt=1 prior_reason={primary_result.reason}")
+        recovery_result = _detect_and_open(recovery_image, attempt_label="rediscovery")
+        if recovery_result.ok:
+            return recovery_result
+        if recovery_result.reason in recoverable_confirmation_failures or recovery_result.reason in immediate_click_failures:
+            print(f"[PLANET_NAV] open_failed reason={recovery_result.reason}")
         return recovery_result
-    if recovery_result.reason in recoverable_confirmation_failures or recovery_result.reason in immediate_click_failures:
-        print(f"[PLANET_NAV] open_failed reason={recovery_result.reason}")
-    return recovery_result
+    finally:
+        _log_cache_summary()
 
 
 def discover_nearest_starfield_planet(

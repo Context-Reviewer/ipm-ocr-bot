@@ -469,6 +469,9 @@ def test_starfield_probe_logs_exact_cache_hit_acceptance(tmp_path, capsys):
     assert "event=exact_hit_validation_passed" in output
     assert "event=exact_hit_accepted" in output
     assert "event=fallback_to_rediscovery" not in output
+    assert "[STARFIELD_CACHE_SUMMARY]" in output
+    assert "exact_hit_accepted=1" in output
+    assert "fallback_to_rediscovery=0" in output
 
 
 def test_starfield_probe_remaps_cached_point_from_anchor_offset_on_same_orientation_drift(tmp_path):
@@ -548,6 +551,10 @@ def test_starfield_probe_logs_remap_acceptance_and_refresh(tmp_path, capsys):
     assert "event=remap_attempted" in output
     assert "event=remap_accepted" in output
     assert "event=cache_refresh_saved" in output
+    assert "[STARFIELD_CACHE_SUMMARY]" in output
+    assert "remap_attempted=1" in output
+    assert "remap_accepted=1" in output
+    assert "cache_refresh_saved=1" in output
 
 
 def test_starfield_probe_rejects_cached_remap_when_orientation_changes(tmp_path, capsys):
@@ -625,6 +632,10 @@ def test_starfield_probe_logs_remap_skip_and_fallback_to_rediscovery(tmp_path, c
     assert "event=remap_skipped" in output
     assert "reason=anchor_offset_inconsistent" in output
     assert "event=fallback_to_rediscovery" in output
+    assert "[STARFIELD_CACHE_SUMMARY]" in output
+    assert "remap_skipped=1" in output
+    assert "fallback_to_rediscovery=1" in output
+    assert "remap_skipped_anchor_offset_inconsistent=1" in output
 
 
 def test_starfield_probe_rejects_invalid_anchor_offset_remap_and_falls_back_to_detection(tmp_path):

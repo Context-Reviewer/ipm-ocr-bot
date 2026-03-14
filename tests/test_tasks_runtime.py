@@ -1056,6 +1056,17 @@ def test_planets_task_logs_starfield_cache_run_rollup(monkeypatch, capsys):
     assert "exact_hit_accepted=1" in output
     assert "fallback_to_rediscovery=1" in output
     assert "remap_skipped_orientation_mismatch=1" in output
+    starfield_cache = result.details["observability"]["probe"]["starfield_cache"]
+    assert starfield_cache == {
+        "exact_hit_accepted": 1,
+        "exact_hit_rejected": 0,
+        "remap_attempted": 0,
+        "remap_accepted": 0,
+        "remap_skipped": 1,
+        "fallback_to_rediscovery": 1,
+        "cache_refresh_saved": 0,
+        "remap_skipped_reasons": {"orientation_mismatch": 1},
+    }
 
 
 def test_planets_task_reuses_scan_final_panel_as_current_panel_when_cash_snapshot_has_no_panel(monkeypatch):

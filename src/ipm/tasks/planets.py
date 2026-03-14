@@ -50,6 +50,7 @@ class PlanetsTask:
                 "reason": None,
                 "light_reads": 0,
                 "full_fallback_reads": 0,
+                "starfield_cache": None,
             },
             "scan": {
                 "visible_planet_count": 0,
@@ -81,6 +82,21 @@ class PlanetsTask:
     @staticmethod
     def _increment_bucket_count(bucket: dict[str, object], key: str, amount: int = 1) -> None:
         bucket[key] = int(bucket.get(key, 0)) + int(amount)
+
+    @staticmethod
+    def _starfield_cache_observability(summary) -> dict[str, object] | None:
+        if summary is None:
+            return None
+        return {
+            "exact_hit_accepted": int(summary.exact_hit_accepted),
+            "exact_hit_rejected": int(summary.exact_hit_rejected),
+            "remap_attempted": int(summary.remap_attempted),
+            "remap_accepted": int(summary.remap_accepted),
+            "remap_skipped": int(summary.remap_skipped),
+            "fallback_to_rediscovery": int(summary.fallback_to_rediscovery),
+            "cache_refresh_saved": int(summary.cache_refresh_saved),
+            "remap_skipped_reasons": {reason: int(count) for reason, count in summary.remap_skipped_reasons},
+        }
 
     def _observe_reader_event(self, event: str, **payload) -> None:
         if self._run_observability is None:
@@ -399,6 +415,7 @@ class PlanetsTask:
                 return
             starfield_cache_rollup_logged = True
             summary = merge_starfield_cache_summaries(*starfield_cache_summaries)
+            self._run_observability["probe"]["starfield_cache"] = self._starfield_cache_observability(summary)
             if summary is None:
                 return
             print(format_starfield_cache_run_rollup(summary, boundary="planets_task"))

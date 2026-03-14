@@ -436,6 +436,41 @@ def test_starfield_probe_uses_cached_center_point_before_scene_detection(tmp_pat
     assert actions.calls == [("click_client_point", (123, 77), 0.0)]
 
 
+def test_starfield_probe_logs_exact_cache_hit_acceptance(tmp_path, capsys):
+    cache_path = tmp_path / "starfield_nodes.json"
+    assert (
+        upsert_starfield_planet_node(
+            str(cache_path),
+            CachedStarfieldPlanetNode(
+                target_rank=1,
+                point=(123, 77),
+                image_size=(320, 240),
+                orientation="landscape",
+                radius=12,
+                planet_id=1,
+                title="1. BALOR",
+                canonical_title="Balor",
+            ),
+        )
+        is True
+    )
+    result = try_open_nearest_starfield_candidate(
+        capture=FakeCapture(Image.new("RGB", (320, 240), (4, 8, 16))),
+        actions=FakeActions(),
+        reader=FakeReader(PlanetPanelState(planet_id=1, title="1. BALOR", mining_cost=100, speed_cost=200)),
+        panel_is_readable=_panel_is_readable,
+        panel_is_confirmed=lambda panel: bool(panel and panel.title == "1. BALOR"),
+        settle_seconds=0.0,
+        expected_orientation="landscape",
+        planet_node_cache_path=str(cache_path),
+    )
+    assert result.ok is True
+    output = capsys.readouterr().out
+    assert "event=exact_hit_validation_passed" in output
+    assert "event=exact_hit_accepted" in output
+    assert "event=fallback_to_rediscovery" not in output
+
+
 def test_starfield_probe_remaps_cached_point_from_anchor_offset_on_same_orientation_drift(tmp_path):
     cache_path = tmp_path / "starfield_nodes.json"
     assert (
@@ -478,7 +513,44 @@ def test_starfield_probe_remaps_cached_point_from_anchor_offset_on_same_orientat
     assert cached_nodes[1].anchor_offset == (110, 0)
 
 
-def test_starfield_probe_rejects_cached_remap_when_orientation_changes(tmp_path):
+def test_starfield_probe_logs_remap_acceptance_and_refresh(tmp_path, capsys):
+    cache_path = tmp_path / "starfield_nodes.json"
+    assert (
+        upsert_starfield_planet_node(
+            str(cache_path),
+            CachedStarfieldPlanetNode(
+                target_rank=1,
+                point=(270, 120),
+                image_size=(320, 240),
+                orientation="landscape",
+                radius=12,
+                planet_id=1,
+                title="1. BALOR",
+                canonical_title="Balor",
+                ship_center=(160, 120),
+                anchor_offset=(110, 0),
+            ),
+        )
+        is True
+    )
+    result = try_open_nearest_starfield_candidate(
+        capture=FakeCapture(_scene_image(ship_center=(180, 120), objects=((290, 120, 12),), size=(360, 240))),
+        actions=FakeActions(),
+        reader=FakeReader(PlanetPanelState(planet_id=1, title="1. BALOR", mining_cost=100, speed_cost=200)),
+        panel_is_readable=_panel_is_readable,
+        panel_is_confirmed=lambda panel: bool(panel and panel.title == "1. BALOR"),
+        settle_seconds=0.0,
+        expected_orientation="landscape",
+        planet_node_cache_path=str(cache_path),
+    )
+    assert result.ok is True
+    output = capsys.readouterr().out
+    assert "event=remap_attempted" in output
+    assert "event=remap_accepted" in output
+    assert "event=cache_refresh_saved" in output
+
+
+def test_starfield_probe_rejects_cached_remap_when_orientation_changes(tmp_path, capsys):
     cache_path = tmp_path / "starfield_nodes.json"
     assert (
         upsert_starfield_planet_node(
@@ -511,6 +583,48 @@ def test_starfield_probe_rejects_cached_remap_when_orientation_changes(tmp_path)
     assert result.ok is False
     assert result.reason == "ship_missing"
     assert actions.calls == []
+    output = capsys.readouterr().out
+    assert "event=remap_skipped" in output
+    assert "reason=orientation_mismatch" in output
+    assert "event=fallback_to_rediscovery" in output
+
+
+def test_starfield_probe_logs_remap_skip_and_fallback_to_rediscovery(tmp_path, capsys):
+    cache_path = tmp_path / "starfield_nodes.json"
+    assert (
+        upsert_starfield_planet_node(
+            str(cache_path),
+            CachedStarfieldPlanetNode(
+                target_rank=1,
+                point=(270, 120),
+                image_size=(320, 240),
+                orientation="landscape",
+                radius=12,
+                planet_id=1,
+                title="1. BALOR",
+                canonical_title="Balor",
+                ship_center=(160, 120),
+                anchor_offset=(300, 0),
+            ),
+        )
+        is True
+    )
+    result = try_open_nearest_starfield_candidate(
+        capture=FakeCapture(_scene_image(ship_center=(180, 120), objects=((320, 120, 12),), size=(360, 240))),
+        actions=FakeActions(),
+        reader=FakeReader(PlanetPanelState(planet_id=1, title="1. BALOR", mining_cost=100, speed_cost=200)),
+        panel_is_readable=_panel_is_readable,
+        panel_is_confirmed=lambda panel: bool(panel and panel.title == "1. BALOR"),
+        settle_seconds=0.0,
+        expected_orientation="landscape",
+        planet_node_cache_path=str(cache_path),
+    )
+    assert result.ok is True
+    output = capsys.readouterr().out
+    assert "event=remap_attempted" in output
+    assert "event=remap_skipped" in output
+    assert "reason=anchor_offset_inconsistent" in output
+    assert "event=fallback_to_rediscovery" in output
 
 
 def test_starfield_probe_rejects_invalid_anchor_offset_remap_and_falls_back_to_detection(tmp_path):
@@ -595,6 +709,46 @@ def test_starfield_probe_refreshes_cache_after_cached_identity_mismatch(tmp_path
     cached_nodes = load_starfield_planet_nodes(str(cache_path))
     assert cached_nodes[1].point == (270, 120)
     assert cached_nodes[1].planet_id == 1
+
+
+def test_starfield_probe_logs_exact_hit_rejection_and_fallback(tmp_path, capsys):
+    cache_path = tmp_path / "starfield_nodes.json"
+    assert (
+        upsert_starfield_planet_node(
+            str(cache_path),
+            CachedStarfieldPlanetNode(
+                target_rank=1,
+                point=(123, 77),
+                image_size=(320, 240),
+                orientation="landscape",
+                radius=12,
+                planet_id=1,
+                title="1. BALOR",
+                canonical_title="Balor",
+            ),
+        )
+        is True
+    )
+    result = try_open_nearest_starfield_candidate(
+        capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((270, 120, 12),))),
+        actions=FakeActions(),
+        reader=FakeReader(
+            [
+                PlanetPanelState(planet_id=2, title="2. DRASTA", mining_level=2, mining_cost=233, speed_cost=106),
+                PlanetPanelState(planet_id=1, title="1. BALOR", mining_level=2, mining_cost=233, speed_cost=106),
+            ]
+        ),
+        panel_is_readable=_panel_is_readable,
+        panel_is_confirmed=PlanetsTask._probe_panel_confirmed,
+        settle_seconds=0.0,
+        expected_orientation="landscape",
+        planet_node_cache_path=str(cache_path),
+    )
+    assert result.ok is True
+    output = capsys.readouterr().out
+    assert "event=exact_hit_rejected" in output
+    assert "event=fallback_to_rediscovery" in output
+    assert "source=exact_hit_rejected" in output
 
 
 def test_starfield_probe_uses_probe_read_fast_path_without_full_reread_on_confirmed_success():

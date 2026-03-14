@@ -160,6 +160,16 @@ class Application:
             details.append(f"target_title={result.target_title!r}")
         return " ".join(details)
 
+    @staticmethod
+    def _starfield_command_details(summary) -> dict[str, object]:
+        return {
+            "observability": {
+                "probe": {
+                    "starfield_cache": PlanetsTask._starfield_cache_observability(summary),
+                }
+            }
+        }
+
     def tick(self) -> None:
         now = time.monotonic()
         focus_result = ensure_focus_result(self.config.focus)
@@ -268,6 +278,7 @@ class Application:
         summary = merge_starfield_cache_summaries(probe.cache_summary)
         if summary is not None:
             print(format_starfield_cache_run_rollup(summary, boundary="starfield_probe_command"))
+        print(f"[STARFIELD_PROBE] details={self._starfield_command_details(summary)}")
         target = (
             f" target=({probe.target_point[0]},{probe.target_point[1]})"
             if probe.target_point is not None
@@ -579,6 +590,7 @@ class Application:
         summary = merge_starfield_cache_summaries(discovery.cache_summary)
         if summary is not None:
             print(format_starfield_cache_run_rollup(summary, boundary="planet_discovery_command"))
+        print(f"[PLANET_DISCOVERY] details={self._starfield_command_details(summary)}")
         target = (
             f" target=({discovery.target_point[0]},{discovery.target_point[1]})"
             if discovery.target_point is not None

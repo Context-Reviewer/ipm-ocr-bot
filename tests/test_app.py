@@ -360,6 +360,10 @@ def test_run_starfield_probe_logs_cache_run_rollup(monkeypatch, tmp_path, capsys
     assert captured.count("[STARFIELD_CACHE_RUN] boundary=starfield_probe_command") == 1
     assert "exact_hit_accepted=1" in captured
     assert "cache_refresh_saved=1" in captured
+    assert "[STARFIELD_PROBE] details=" in captured
+    assert "'starfield_cache': {'exact_hit_accepted': 1" in captured
+    assert "'cache_refresh_saved': 1" in captured
+    assert "'remap_skipped_reasons': {}" in captured
 
 
 def test_run_discovery_logs_focus_diagnostics_when_focus_unavailable(monkeypatch, tmp_path, capsys):
@@ -433,6 +437,12 @@ def test_run_discovery_logs_cache_run_rollup(monkeypatch, tmp_path, capsys):
     assert "remap_attempted=1" in captured
     assert "remap_accepted=1" in captured
     assert "cache_refresh_saved=1" in captured
+    assert "[PLANET_DISCOVERY] details=" in captured
+    assert "'starfield_cache': {'exact_hit_accepted': 0" in captured
+    assert "'remap_attempted': 1" in captured
+    assert "'remap_accepted': 1" in captured
+    assert "'cache_refresh_saved': 1" in captured
+    assert "'remap_skipped_reasons': {}" in captured
 
 
 def test_run_discovery_reports_return_failure_when_post_open_recovery_fails(monkeypatch, tmp_path):

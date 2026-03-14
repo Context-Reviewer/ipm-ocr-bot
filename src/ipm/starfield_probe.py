@@ -12,6 +12,7 @@ from .starfield_cache import (
     image_orientation,
     load_starfield_planet_nodes,
     panel_matches_cached_identity,
+    remap_cached_node_point,
     upsert_starfield_planet_node,
 )
 from .starfield_scene import (
@@ -211,7 +212,7 @@ def try_open_starfield_candidate_by_rank(
         scene: StarfieldScene,
         panel: object,
         target_point: tuple[int, int],
-        radius: int,
+        radius: int | None,
         scene_image: Image.Image,
     ) -> None:
         if not planet_node_cache_path:
@@ -246,16 +247,14 @@ def try_open_starfield_candidate_by_rank(
         )
         print(f"[PLANET_NAV] cache_update rank={target_rank} saved={'true' if cache_saved else 'false'}")
 
-    def _detect_and_open(scene_image: Image.Image, *, attempt_label: str) -> StarfieldProbeResult:
+    def _detect_scene(scene_image: Image.Image) -> StarfieldScene:
         attempt_orientation = image_orientation(scene_image.size)
         if normalized_expected_orientation is not None and attempt_orientation != normalized_expected_orientation:
-            print(
-                "[PLANET_NAV] "
-                f"open_failed reason=geometry_mismatch expected={normalized_expected_orientation} actual={attempt_orientation}"
+            raise ValueError(
+                f"geometry_mismatch expected={normalized_expected_orientation} actual={attempt_orientation}"
             )
-            return StarfieldProbeResult(ok=False, reason="geometry_mismatch", rank=target_rank)
         resolved_viewport = resolve_starfield_viewport(scene_image.size, scene_viewport)
-        scene = detect_starfield_scene(
+        return detect_starfield_scene(
             scene_image,
             viewport=resolved_viewport,
             exclusion_zones=resolve_starfield_exclusion_zones(
@@ -293,6 +292,8 @@ def try_open_starfield_candidate_by_rank(
             max_ship_bbox_height=max_ship_bbox_height,
             max_ship_area_ratio=max_ship_area_ratio,
         )
+
+    def _log_scene_debug(scene: StarfieldScene) -> None:
         ship_debug = format_ship_detection_debug(scene)
         if ship_debug:
             print(ship_debug)
@@ -301,6 +302,19 @@ def try_open_starfield_candidate_by_rank(
         print(format_starfield_scene_debug(scene))
         for rejected in scene.rejected_candidate_debug:
             print(rejected)
+
+    def _detect_and_open(
+        scene_image: Image.Image,
+        *,
+        attempt_label: str,
+        detected_scene: StarfieldScene | None = None,
+    ) -> StarfieldProbeResult:
+        try:
+            scene = detected_scene if detected_scene is not None else _detect_scene(scene_image)
+        except ValueError as exc:
+            print(f"[PLANET_NAV] open_failed reason={exc}")
+            return StarfieldProbeResult(ok=False, reason="geometry_mismatch", rank=target_rank)
+        _log_scene_debug(scene)
         if scene.ship_reject_reason is not None:
             print(f"[PLANET_NAV] open_failed reason=ship_implausible detail={scene.ship_reject_reason}")
             return StarfieldProbeResult(ok=False, reason="ship_implausible", scene=scene, rank=target_rank)
@@ -380,6 +394,7 @@ def try_open_starfield_candidate_by_rank(
         )
         return StarfieldProbeResult(ok=False, reason="geometry_mismatch", rank=target_rank)
     cached_entry = load_starfield_planet_nodes(planet_node_cache_path).get(target_rank)
+    remap_scene: StarfieldScene | None = None
     if cached_entry is not None:
         cache_reason = cached_node_validation_reason(
             cached_entry,
@@ -408,8 +423,62 @@ def try_open_starfield_candidate_by_rank(
                 )
             print(f"[PLANET_NAV] cache_recover rank={target_rank} reason={cached_reason_text}")
         else:
-            print(f"[PLANET_NAV] cache_skip rank={target_rank} reason={cache_reason}")
-    primary_result = _detect_and_open(working_image, attempt_label="primary")
+            remap_attempted = False
+            remap_reasons = {"image_size_mismatch", "point_out_of_bounds"}
+            entry_orientation = str(cached_entry.orientation or "").strip().lower()
+            if cache_reason in remap_reasons and entry_orientation == current_orientation:
+                remap_attempted = True
+                try:
+                    remap_scene = _detect_scene(working_image)
+                except ValueError as exc:
+                    print(f"[PLANET_NAV] cache_remap_skip rank={target_rank} reason={exc}")
+                else:
+                    ship_center = None
+                    if remap_scene.ship_center_x is not None and remap_scene.ship_center_y is not None:
+                        ship_center = (remap_scene.ship_center_x, remap_scene.ship_center_y)
+                    remapped_point, remap_reason = remap_cached_node_point(
+                        cached_entry,
+                        image_size=working_image.size,
+                        ship_center=ship_center,
+                    )
+                    if remapped_point is not None:
+                        print(
+                            "[PLANET_NAV] "
+                            f"cache_remap rank={target_rank} point=({remapped_point[0]},{remapped_point[1]}) "
+                            f"ship=({ship_center[0]},{ship_center[1]})"
+                        )
+                        remapped_ok, remapped_reason, remapped_panel = _attempt_confirmation(
+                            remapped_point,
+                            attempt_label="cache-remap",
+                            radius=cached_entry.radius,
+                            expected_cache_entry=cached_entry,
+                        )
+                        if remapped_ok:
+                            _cache_result(
+                                scene=remap_scene,
+                                panel=remapped_panel,
+                                target_point=remapped_point,
+                                radius=cached_entry.radius,
+                                scene_image=working_image,
+                            )
+                            print("[PLANET_NAV] open_confirmed via=cache_remap")
+                            return StarfieldProbeResult(
+                                ok=True,
+                                reason="open_confirmed",
+                                target_point=remapped_point,
+                                rank=target_rank,
+                                panel=remapped_panel,
+                            )
+                        print(f"[PLANET_NAV] cache_recover rank={target_rank} reason={remapped_reason}")
+                    else:
+                        print(f"[PLANET_NAV] cache_remap_skip rank={target_rank} reason={remap_reason}")
+            if not remap_attempted:
+                print(f"[PLANET_NAV] cache_skip rank={target_rank} reason={cache_reason}")
+    primary_result = _detect_and_open(
+        working_image,
+        attempt_label="primary",
+        detected_scene=remap_scene,
+    )
     if primary_result.ok:
         return primary_result
     if primary_result.reason in immediate_click_failures:

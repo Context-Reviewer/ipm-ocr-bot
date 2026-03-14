@@ -123,8 +123,8 @@ def _draw_ship(draw, *, cx, cy, size, fill=(245, 245, 245), glow=None):
         )
 
 
-def _scene_image(*, ship_center=None, ship_size=(36, 18), ship_style="ellipse", objects=()):
-    image = Image.new("RGB", (320, 240), (4, 8, 16))
+def _scene_image(*, ship_center=None, ship_size=(36, 18), ship_style="ellipse", objects=(), size=(320, 240)):
+    image = Image.new("RGB", size, (4, 8, 16))
     from PIL import ImageDraw
 
     draw = ImageDraw.Draw(image)
@@ -434,6 +434,120 @@ def test_starfield_probe_uses_cached_center_point_before_scene_detection(tmp_pat
     assert result.reason == "open_confirmed"
     assert result.target_point == (123, 77)
     assert actions.calls == [("click_client_point", (123, 77), 0.0)]
+
+
+def test_starfield_probe_remaps_cached_point_from_anchor_offset_on_same_orientation_drift(tmp_path):
+    cache_path = tmp_path / "starfield_nodes.json"
+    assert (
+        upsert_starfield_planet_node(
+            str(cache_path),
+            CachedStarfieldPlanetNode(
+                target_rank=1,
+                point=(270, 120),
+                image_size=(320, 240),
+                orientation="landscape",
+                radius=12,
+                planet_id=1,
+                title="1. BALOR",
+                canonical_title="Balor",
+                ship_center=(160, 120),
+                anchor_offset=(110, 0),
+            ),
+        )
+        is True
+    )
+    actions = FakeActions()
+    result = try_open_nearest_starfield_candidate(
+        capture=FakeCapture(_scene_image(ship_center=(180, 120), objects=((290, 120, 12),), size=(360, 240))),
+        actions=actions,
+        reader=FakeReader(PlanetPanelState(planet_id=1, title="1. BALOR", mining_cost=100, speed_cost=200)),
+        panel_is_readable=_panel_is_readable,
+        panel_is_confirmed=lambda panel: bool(panel and panel.title == "1. BALOR"),
+        settle_seconds=0.0,
+        expected_orientation="landscape",
+        planet_node_cache_path=str(cache_path),
+    )
+    assert result.ok is True
+    assert result.reason == "open_confirmed"
+    assert result.target_point == (290, 120)
+    assert actions.calls == [("click_client_point", (290, 120), 0.0)]
+    cached_nodes = load_starfield_planet_nodes(str(cache_path))
+    assert cached_nodes[1].point == (290, 120)
+    assert cached_nodes[1].image_size == (360, 240)
+    assert cached_nodes[1].ship_center == (180, 120)
+    assert cached_nodes[1].anchor_offset == (110, 0)
+
+
+def test_starfield_probe_rejects_cached_remap_when_orientation_changes(tmp_path):
+    cache_path = tmp_path / "starfield_nodes.json"
+    assert (
+        upsert_starfield_planet_node(
+            str(cache_path),
+            CachedStarfieldPlanetNode(
+                target_rank=1,
+                point=(270, 120),
+                image_size=(320, 240),
+                orientation="landscape",
+                radius=12,
+                planet_id=1,
+                title="1. BALOR",
+                canonical_title="Balor",
+                ship_center=(160, 120),
+                anchor_offset=(110, 0),
+            ),
+        )
+        is True
+    )
+    actions = FakeActions()
+    result = try_open_nearest_starfield_candidate(
+        capture=FakeCapture(Image.new("RGB", (240, 320), (4, 8, 16))),
+        actions=actions,
+        reader=FakeReader(PlanetPanelState(planet_id=1, title="1. BALOR", mining_cost=100, speed_cost=200)),
+        panel_is_readable=_panel_is_readable,
+        panel_is_confirmed=lambda panel: bool(panel and panel.title == "1. BALOR"),
+        settle_seconds=0.0,
+        planet_node_cache_path=str(cache_path),
+    )
+    assert result.ok is False
+    assert result.reason == "ship_missing"
+    assert actions.calls == []
+
+
+def test_starfield_probe_rejects_invalid_anchor_offset_remap_and_falls_back_to_detection(tmp_path):
+    cache_path = tmp_path / "starfield_nodes.json"
+    assert (
+        upsert_starfield_planet_node(
+            str(cache_path),
+            CachedStarfieldPlanetNode(
+                target_rank=1,
+                point=(270, 120),
+                image_size=(320, 240),
+                orientation="landscape",
+                radius=12,
+                planet_id=1,
+                title="1. BALOR",
+                canonical_title="Balor",
+                ship_center=(160, 120),
+                anchor_offset=(300, 0),
+            ),
+        )
+        is True
+    )
+    actions = FakeActions()
+    result = try_open_nearest_starfield_candidate(
+        capture=FakeCapture(_scene_image(ship_center=(180, 120), objects=((320, 120, 12),), size=(360, 240))),
+        actions=actions,
+        reader=FakeReader(PlanetPanelState(planet_id=1, title="1. BALOR", mining_cost=100, speed_cost=200)),
+        panel_is_readable=_panel_is_readable,
+        panel_is_confirmed=lambda panel: bool(panel and panel.title == "1. BALOR"),
+        settle_seconds=0.0,
+        expected_orientation="landscape",
+        planet_node_cache_path=str(cache_path),
+    )
+    assert result.ok is True
+    assert result.reason == "open_confirmed"
+    assert result.target_point == (320, 120)
+    assert actions.calls == [("click_client_point", (320, 120), 0.0)]
 
 
 def test_starfield_probe_refreshes_cache_after_cached_identity_mismatch(tmp_path):

@@ -151,6 +151,43 @@ def cached_node_validation_reason(
     return None
 
 
+def remap_cached_node_point(
+    entry: CachedStarfieldPlanetNode,
+    *,
+    image_size: tuple[int, int],
+    ship_center: tuple[int, int] | None,
+) -> tuple[tuple[int, int] | None, str | None]:
+    current_orientation = image_orientation(image_size)
+    if str(entry.orientation or "").strip().lower() != current_orientation:
+        return None, "orientation_mismatch"
+    if ship_center is None:
+        return None, "ship_anchor_missing"
+    if entry.anchor_offset is None:
+        return None, "anchor_offset_missing"
+    normalized_point = (int(entry.point[0]), int(entry.point[1]))
+    normalized_offset = (int(entry.anchor_offset[0]), int(entry.anchor_offset[1]))
+    if entry.ship_center is not None:
+        normalized_cached_ship = (int(entry.ship_center[0]), int(entry.ship_center[1]))
+        expected_point = (
+            normalized_cached_ship[0] + normalized_offset[0],
+            normalized_cached_ship[1] + normalized_offset[1],
+        )
+        if expected_point != normalized_point:
+            return None, "anchor_offset_inconsistent"
+    remapped_point = (
+        int(ship_center[0]) + normalized_offset[0],
+        int(ship_center[1]) + normalized_offset[1],
+    )
+    width, height = (max(0, int(image_size[0])), max(0, int(image_size[1])))
+    x, y = remapped_point
+    if x < 0 or y < 0 or x >= width or y >= height:
+        return None, "remapped_point_out_of_bounds"
+    radius = max(0, int(entry.radius)) if entry.radius is not None else 0
+    if radius > 0 and (x - radius < 0 or y - radius < 0 or x + radius >= width or y + radius >= height):
+        return None, "remapped_radius_out_of_bounds"
+    return remapped_point, None
+
+
 def panel_matches_cached_identity(panel: object, entry: CachedStarfieldPlanetNode) -> bool:
     cached_planet_id = entry.planet_id
     cached_title = entry.canonical_title or normalize_planet_name(entry.title or "")

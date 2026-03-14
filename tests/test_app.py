@@ -81,6 +81,25 @@ def _overlay_image(size: tuple[int, int] = (600, 1100)) -> Image.Image:
     return image
 
 
+def _planet_panel_image(size: tuple[int, int] = (600, 1100)) -> Image.Image:
+    image = _starfield_image(size=size)
+    from PIL import ImageDraw
+
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 340, size[0], size[1] - 40), fill=(22, 18, 52))
+    draw.ellipse((48, 458, 108, 518), fill=(255, 176, 62))
+    draw.polygon([(122, 488), (138, 468), (138, 508)], fill=(170, 190, 240))
+    draw.polygon([(20, 488), (36, 468), (36, 508)], fill=(170, 190, 240))
+    draw.text((50, 470), "8. ACHERON", fill=(245, 245, 250))
+    draw.text((260, 520), "Resource", fill=(230, 230, 235))
+    draw.text((260, 575), "Mining Rate", fill=(235, 235, 240))
+    draw.rounded_rectangle((305, 735, 500, 785), radius=14, outline=(0, 220, 255), width=4)
+    draw.rounded_rectangle((305, 835, 500, 885), radius=14, outline=(0, 220, 255), width=4)
+    draw.rounded_rectangle((305, 935, 500, 985), radius=14, outline=(0, 220, 255), width=4)
+    draw.text((395, 748), "$610.65K", fill=(230, 230, 240))
+    return image
+
+
 def test_prepare_run_artifact_dir_uses_timestamp_format(tmp_path):
     path = prepare_run_artifact_dir(base_dir=str(tmp_path), now=datetime(2026, 3, 9, 21, 30, 15))
     assert path.name == "20260309_213015"
@@ -93,6 +112,69 @@ def test_save_run_frame_writes_png_to_run_dir(tmp_path):
     frame_path = save_run_frame(image, output_dir=tmp_path)
     assert frame_path.endswith("frame.png")
     assert (tmp_path / "frame.png").exists()
+
+
+def test_starfield_command_details_helper_preserves_shape():
+    summary = StarfieldCacheSummary(
+        exact_hit_accepted=1,
+        remap_attempted=2,
+        remap_skipped=1,
+        remap_skipped_reasons=(("orientation_mismatch", 1),),
+    )
+
+    details = Application._starfield_command_details(
+        summary,
+        boundary="starfield_probe_command",
+        command_type="starfield_probe",
+        phase="post_invocation",
+        failure_category="probe",
+        failure_reason="panel_not_confirmed",
+    )
+
+    assert details == {
+        "observability": {
+            "command": {
+                "boundary": "starfield_probe_command",
+                "type": "starfield_probe",
+                "phase": "post_invocation",
+                "failure_category": "probe",
+                "failure_reason": "panel_not_confirmed",
+            },
+            "probe": {
+                "starfield_cache": {
+                    "exact_hit_accepted": 1,
+                    "exact_hit_rejected": 0,
+                    "remap_attempted": 2,
+                    "remap_accepted": 0,
+                    "remap_skipped": 1,
+                    "fallback_to_rediscovery": 0,
+                    "cache_refresh_saved": 0,
+                    "remap_skipped_reasons": {"orientation_mismatch": 1},
+                }
+            },
+        }
+    }
+
+
+def test_starfield_command_details_emitter_uses_expected_line_shape(capsys):
+    Application._emit_starfield_command_details(
+        "STARFIELD_PROBE",
+        summary=None,
+        boundary="starfield_probe_command",
+        command_type="starfield_probe",
+        phase="preflight",
+        failure_category="focus",
+        failure_reason="focus_unavailable",
+    )
+
+    captured = capsys.readouterr().out.strip()
+    assert captured.startswith("[STARFIELD_PROBE] details={")
+    assert "'boundary': 'starfield_probe_command'" in captured
+    assert "'type': 'starfield_probe'" in captured
+    assert "'phase': 'preflight'" in captured
+    assert "'failure_category': 'focus'" in captured
+    assert "'failure_reason': 'focus_unavailable'" in captured
+    assert "'starfield_cache': None" in captured
 
 
 def test_recover_starfield_succeeds_on_first_close_attempt(tmp_path):
@@ -134,6 +216,15 @@ def test_evaluate_ui_state_keeps_starfield_frame_ready(tmp_path):
     assert state.state == "starfield_ready"
     assert state.panel_visible is False
     assert state.starfield_ready is True
+
+
+def test_evaluate_ui_state_detects_planet_panel_without_close_signal(tmp_path):
+    app = _make_app(tmp_path)
+    state = app._evaluate_ui_state(_planet_panel_image())
+    assert state.state == "planet_panel_present"
+    assert state.detail == "panel_controls_visible"
+    assert state.panel_visible is True
+    assert state.starfield_ready is False
 
 
 def test_recover_starfield_succeeds_on_expanded_close_fallback(tmp_path):
@@ -187,9 +278,46 @@ def test_recover_starfield_overlay_tries_reset_ui_after_safe_dismiss(tmp_path):
     ]
 
 
+def test_recover_starfield_overlay_tries_panel_close_fallback_after_reset_ui(tmp_path):
+    app = _make_app(tmp_path)
+    states = iter(
+        [
+            UIStateCheck(state="overlay_present", detail="central_modal_overlay", panel_visible=False),
+            UIStateCheck(state="overlay_present", detail="central_modal_overlay", panel_visible=False),
+            UIStateCheck(state="overlay_present", detail="central_modal_overlay", panel_visible=False),
+            UIStateCheck(state="starfield_ready", detail="ship_detected", starfield_ready=True),
+        ]
+    )
+    original_evaluate = Application._evaluate_ui_state
+    original_capture = Application._capture_frame
+    Application._evaluate_ui_state = lambda self, image: next(states)  # type: ignore[assignment]
+    frames = iter(
+        [
+            Image.new("RGB", (600, 1100), "black"),
+            Image.new("RGB", (600, 1100), "black"),
+            Image.new("RGB", (600, 1100), "black"),
+        ]
+    )
+    Application._capture_frame = lambda self: next(frames)  # type: ignore[assignment]
+
+    try:
+        ok, frame = app._recover_starfield(stage="pre_run", image=_overlay_image())
+    finally:
+        Application._evaluate_ui_state = original_evaluate  # type: ignore[assignment]
+        Application._capture_frame = original_capture  # type: ignore[assignment]
+
+    assert ok is True
+    assert frame is not None
+    assert app.actions.calls == [
+        ("click_client_point", (32, 96), app.config.actions.menu_delay_seconds),
+        ("reset_ui",),
+        ("click_rect_center", "PLANET_PANEL_CLOSE", app.config.actions.menu_delay_seconds),
+    ]
+
+
 def test_recover_starfield_overlay_uses_safe_dismiss_then_reset_ui_and_stays_fail_closed(tmp_path):
     app = _make_app(tmp_path)
-    frames = iter([_overlay_image(), _overlay_image()])
+    frames = iter([_overlay_image(), _overlay_image(), _overlay_image(), _overlay_image()])
     original_capture = Application._capture_frame
     Application._capture_frame = lambda self: next(frames)  # type: ignore[assignment]
 
@@ -200,10 +328,13 @@ def test_recover_starfield_overlay_uses_safe_dismiss_then_reset_ui_and_stays_fai
 
     assert ok is False
     assert frame is None
-    assert app.actions.calls == [
+    assert app.actions.calls[0:3] == [
         ("click_client_point", (32, 96), app.config.actions.menu_delay_seconds),
         ("reset_ui",),
+        ("click_rect_center", "PLANET_PANEL_CLOSE", app.config.actions.menu_delay_seconds),
     ]
+    expanded_clicks = [call for call in app.actions.calls if call[0] == "click_client_point"]
+    assert len(expanded_clicks) == 5
 
 
 def test_run_discovery_recovers_before_proceeding(monkeypatch, tmp_path):
@@ -253,7 +384,7 @@ def test_run_discovery_recovers_before_proceeding(monkeypatch, tmp_path):
 
 def test_run_discovery_fails_closed_when_overlay_not_dismissed(monkeypatch, tmp_path):
     app = _make_app(tmp_path)
-    frames = iter([_overlay_image(), _overlay_image(), _overlay_image()])
+    frames = iter([_overlay_image(), _overlay_image(), _overlay_image(), _overlay_image(), _overlay_image()])
     monkeypatch.setattr(
         app_module,
         "ensure_focus_result",
@@ -339,6 +470,7 @@ def test_run_starfield_probe_logs_focus_diagnostics_when_focus_unavailable(monke
 
 def test_run_starfield_probe_logs_cache_run_rollup(monkeypatch, tmp_path, capsys):
     app = _make_app(tmp_path)
+    frame = Image.new("RGB", (600, 1100), "black")
     monkeypatch.setattr(
         app_module,
         "ensure_focus_result",
@@ -349,6 +481,8 @@ def test_run_starfield_probe_logs_cache_run_rollup(monkeypatch, tmp_path, capsys
             active_title_after="BlueStacks App Player",
         ),
     )
+    monkeypatch.setattr(Application, "_capture_frame", lambda self: frame)
+    monkeypatch.setattr(Application, "_recover_starfield", lambda self, *, stage, image: (True, image))
     monkeypatch.setattr(
         app_module,
         "try_open_nearest_starfield_candidate",
@@ -375,6 +509,7 @@ def test_run_starfield_probe_logs_cache_run_rollup(monkeypatch, tmp_path, capsys
 
 def test_run_starfield_probe_logs_structured_details_on_post_invocation_failure(monkeypatch, tmp_path, capsys):
     app = _make_app(tmp_path)
+    frame = Image.new("RGB", (600, 1100), "black")
     monkeypatch.setattr(
         app_module,
         "ensure_focus_result",
@@ -385,6 +520,8 @@ def test_run_starfield_probe_logs_structured_details_on_post_invocation_failure(
             active_title_after="BlueStacks App Player",
         ),
     )
+    monkeypatch.setattr(Application, "_capture_frame", lambda self: frame)
+    monkeypatch.setattr(Application, "_recover_starfield", lambda self, *, stage, image: (True, image))
     monkeypatch.setattr(
         app_module,
         "try_open_nearest_starfield_candidate",
@@ -409,6 +546,68 @@ def test_run_starfield_probe_logs_structured_details_on_post_invocation_failure(
     assert "'starfield_cache': {'exact_hit_accepted': 0" in captured
     assert "'exact_hit_rejected': 1" in captured
     assert "'fallback_to_rediscovery': 1" in captured
+
+
+def test_run_starfield_probe_recovers_before_proceeding(monkeypatch, tmp_path):
+    app = _make_app(tmp_path)
+    frame = Image.new("RGB", (600, 1100), "black")
+    monkeypatch.setattr(
+        app_module,
+        "ensure_focus_result",
+        lambda focus: FocusResult(
+            ok=True,
+            reason="already_focused",
+            active_title_before="BlueStacks App Player",
+            active_title_after="BlueStacks App Player",
+        ),
+    )
+    monkeypatch.setattr(Application, "_capture_frame", lambda self: frame)
+
+    recovery_calls: list[str] = []
+
+    def fake_recover(*, stage: str, image):
+        recovery_calls.append(stage)
+        return True, image
+
+    monkeypatch.setattr(Application, "_recover_starfield", lambda self, *, stage, image: fake_recover(stage=stage, image=image))
+    monkeypatch.setattr(
+        app_module,
+        "try_open_nearest_starfield_candidate",
+        lambda **kwargs: StarfieldProbeResult(ok=True, reason="open_confirmed", target_point=(123, 456)),
+    )
+
+    result = app.run_starfield_probe_once()
+
+    assert result == 0
+    assert recovery_calls == ["pre_run"]
+
+
+def test_run_starfield_probe_logs_structured_details_when_capture_unavailable(monkeypatch, tmp_path, capsys):
+    app = _make_app(tmp_path)
+    monkeypatch.setattr(
+        app_module,
+        "ensure_focus_result",
+        lambda focus: FocusResult(
+            ok=True,
+            reason="already_focused",
+            active_title_before="BlueStacks App Player",
+            active_title_after="BlueStacks App Player",
+        ),
+    )
+    monkeypatch.setattr(Application, "_capture_frame", lambda self: None)
+
+    result = app.run_starfield_probe_once()
+
+    captured = capsys.readouterr().out
+    assert result == 1
+    assert "[STARFIELD_PROBE] result=capture_unavailable" in captured
+    assert "[STARFIELD_PROBE] details=" in captured
+    assert "'boundary': 'starfield_probe_command'" in captured
+    assert "'type': 'starfield_probe'" in captured
+    assert "'phase': 'preflight'" in captured
+    assert "'failure_category': 'capture'" in captured
+    assert "'failure_reason': 'capture_unavailable'" in captured
+    assert "'starfield_cache': None" in captured
 
 
 def test_run_discovery_logs_focus_diagnostics_when_focus_unavailable(monkeypatch, tmp_path, capsys):

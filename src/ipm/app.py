@@ -185,6 +185,34 @@ class Application:
             }
         }
 
+    @classmethod
+    def _emit_starfield_command_details(
+        cls,
+        label: str,
+        *,
+        summary,
+        boundary: str,
+        command_type: str,
+        phase: str,
+        failure_category: str | None = None,
+        failure_reason: str | None = None,
+    ) -> None:
+        print(
+            f"[{label}] "
+            f"details={cls._starfield_command_details(summary, boundary=boundary, command_type=command_type, phase=phase, failure_category=failure_category, failure_reason=failure_reason)}"
+        )
+
+    @staticmethod
+    def _command_outcome_metadata(
+        *,
+        ok: bool,
+        failure_category: str | None = None,
+        failure_reason: str | None = None,
+    ) -> tuple[str, str | None, str | None]:
+        if ok:
+            return "command", None, None
+        return "post_invocation", failure_category, failure_reason
+
     def tick(self) -> None:
         now = time.monotonic()
         focus_result = ensure_focus_result(self.config.focus)
@@ -213,27 +241,68 @@ class Application:
 
     def run_starfield_probe_once(self) -> int:
         if not bool(getattr(self.config.starfield, "enable_click_probe", False)):
-            print(
-                "[STARFIELD_PROBE] "
-                f"details={self._starfield_command_details(None, boundary='starfield_probe_command', command_type='starfield_probe', phase='preflight', failure_category='config', failure_reason='probe_disabled')}"
+            self._emit_starfield_command_details(
+                "STARFIELD_PROBE",
+                summary=None,
+                boundary="starfield_probe_command",
+                command_type="starfield_probe",
+                phase="preflight",
+                failure_category="config",
+                failure_reason="probe_disabled",
             )
             print("[STARFIELD_PROBE] result=probe_disabled")
             return 1
         focus_result = ensure_focus_result(self.config.focus)
         if not focus_result.ok:
-            print(
-                "[STARFIELD_PROBE] "
-                f"details={self._starfield_command_details(None, boundary='starfield_probe_command', command_type='starfield_probe', phase='preflight', failure_category='focus', failure_reason='focus_unavailable')}"
+            self._emit_starfield_command_details(
+                "STARFIELD_PROBE",
+                summary=None,
+                boundary="starfield_probe_command",
+                command_type="starfield_probe",
+                phase="preflight",
+                failure_category="focus",
+                failure_reason="focus_unavailable",
             )
             print(f"[STARFIELD_PROBE] result=focus_unavailable {self._format_focus_failure(focus_result)}")
             return 1
         planet_task = self.tasks.get("planets")
         if planet_task is None or getattr(planet_task, "reader", None) is None:
-            print(
-                "[STARFIELD_PROBE] "
-                f"details={self._starfield_command_details(None, boundary='starfield_probe_command', command_type='starfield_probe', phase='preflight', failure_category='availability', failure_reason='probe_unavailable')}"
+            self._emit_starfield_command_details(
+                "STARFIELD_PROBE",
+                summary=None,
+                boundary="starfield_probe_command",
+                command_type="starfield_probe",
+                phase="preflight",
+                failure_category="availability",
+                failure_reason="probe_unavailable",
             )
             print("[STARFIELD_PROBE] result=probe_unavailable")
+            return 1
+        precheck_frame = self._capture_frame()
+        if precheck_frame is None:
+            self._emit_starfield_command_details(
+                "STARFIELD_PROBE",
+                summary=None,
+                boundary="starfield_probe_command",
+                command_type="starfield_probe",
+                phase="preflight",
+                failure_category="capture",
+                failure_reason="capture_unavailable",
+            )
+            print("[STARFIELD_PROBE] result=capture_unavailable")
+            return 1
+        ready, _ = self._recover_starfield(stage="pre_run", image=precheck_frame)
+        if not ready:
+            self._emit_starfield_command_details(
+                "STARFIELD_PROBE",
+                summary=None,
+                boundary="starfield_probe_command",
+                command_type="starfield_probe",
+                phase="preflight",
+                failure_category="ui_state",
+                failure_reason="not_starfield_ready",
+            )
+            print("[STARFIELD_PROBE] result=not_starfield_ready")
             return 1
 
         def _starfield_ready_check():
@@ -305,13 +374,19 @@ class Application:
         summary = merge_starfield_cache_summaries(probe.cache_summary)
         if summary is not None:
             print(format_starfield_cache_run_rollup(summary, boundary="starfield_probe_command"))
-        probe_ok = bool(probe.ok)
-        probe_phase = "command" if probe_ok else "post_invocation"
-        probe_failure_category = None if probe_ok else "probe"
-        probe_failure_reason = None if probe_ok else str(probe.reason)
-        print(
-            "[STARFIELD_PROBE] "
-            f"details={self._starfield_command_details(summary, boundary='starfield_probe_command', command_type='starfield_probe', phase=probe_phase, failure_category=probe_failure_category, failure_reason=probe_failure_reason)}"
+        probe_phase, probe_failure_category, probe_failure_reason = self._command_outcome_metadata(
+            ok=bool(probe.ok),
+            failure_category="probe",
+            failure_reason=str(probe.reason),
+        )
+        self._emit_starfield_command_details(
+            "STARFIELD_PROBE",
+            summary=summary,
+            boundary="starfield_probe_command",
+            command_type="starfield_probe",
+            phase=probe_phase,
+            failure_category=probe_failure_category,
+            failure_reason=probe_failure_reason,
         )
         target = (
             f" target=({probe.target_point[0]},{probe.target_point[1]})"
@@ -399,6 +474,7 @@ class Application:
     def _planet_panel_likely_visible(self, image: Image.Image) -> bool:
         close_crop = self._crop_rect_image(image, "PLANET_PANEL_CLOSE")
         title_crop = self._crop_rect_image(image, "PLANET_TITLE")
+        text_crop = self._crop_rect_image(image, "PLANET_PANEL_TEXT")
         close_signal = self._crop_has_panel_signal(
             close_crop,
             min_dynamic_range=28,
@@ -410,7 +486,12 @@ class Application:
             min_bright_fraction=0.03,
             bright_threshold=135,
         )
-        return close_signal and title_signal
+        text_signal = self._crop_has_panel_signal(
+            text_crop,
+            min_dynamic_range=120,
+            min_bright_fraction=0.005,
+        )
+        return title_signal and (close_signal or text_signal)
 
     def _central_overlay_likely_visible(self, image: Image.Image) -> bool:
         panel_crop = self._crop_rect_image(image, "PLANET_PANEL_TEXT")
@@ -507,6 +588,18 @@ class Application:
         attempts.append(("safe_dismiss", lambda: self._click_safe_dismiss(image)))
         if state_check.state == "overlay_present":
             attempts.append(("reset_ui", self._reset_ui_recovery))
+            attempts.extend(
+                [
+                    (
+                        "close_rect_primary_fallback",
+                        lambda: self.actions.click_rect_center(
+                            "PLANET_PANEL_CLOSE",
+                            delay=self.config.actions.menu_delay_seconds,
+                        ),
+                    ),
+                    ("close_rect_expanded_fallback", self._click_expanded_planet_close),
+                ]
+            )
 
         for attempt_name, attempt_action in attempts:
             clicked = bool(attempt_action())
@@ -527,41 +620,66 @@ class Application:
 
     def run_discover_planet_rank_once(self, target_rank: int) -> int:
         if not bool(getattr(self.config.starfield, "enable_click_probe", False)):
-            print(
-                "[PLANET_DISCOVERY] "
-                f"details={self._starfield_command_details(None, boundary='planet_discovery_command', command_type='planet_discovery', phase='preflight', failure_category='config', failure_reason='probe_disabled')}"
+            self._emit_starfield_command_details(
+                "PLANET_DISCOVERY",
+                summary=None,
+                boundary="planet_discovery_command",
+                command_type="planet_discovery",
+                phase="preflight",
+                failure_category="config",
+                failure_reason="probe_disabled",
             )
             print("[PLANET_DISCOVERY] result=probe_disabled")
             return 1
         focus_result = ensure_focus_result(self.config.focus)
         if not focus_result.ok:
-            print(
-                "[PLANET_DISCOVERY] "
-                f"details={self._starfield_command_details(None, boundary='planet_discovery_command', command_type='planet_discovery', phase='preflight', failure_category='focus', failure_reason='focus_unavailable')}"
+            self._emit_starfield_command_details(
+                "PLANET_DISCOVERY",
+                summary=None,
+                boundary="planet_discovery_command",
+                command_type="planet_discovery",
+                phase="preflight",
+                failure_category="focus",
+                failure_reason="focus_unavailable",
             )
             print(f"[PLANET_DISCOVERY] result=focus_unavailable {self._format_focus_failure(focus_result)}")
             return 1
         planet_task = self.tasks.get("planets")
         if planet_task is None or getattr(planet_task, "reader", None) is None:
-            print(
-                "[PLANET_DISCOVERY] "
-                f"details={self._starfield_command_details(None, boundary='planet_discovery_command', command_type='planet_discovery', phase='preflight', failure_category='availability', failure_reason='probe_unavailable')}"
+            self._emit_starfield_command_details(
+                "PLANET_DISCOVERY",
+                summary=None,
+                boundary="planet_discovery_command",
+                command_type="planet_discovery",
+                phase="preflight",
+                failure_category="availability",
+                failure_reason="probe_unavailable",
             )
             print("[PLANET_DISCOVERY] result=probe_unavailable")
             return 1
         precheck_frame = self._capture_frame()
         if precheck_frame is None:
-            print(
-                "[PLANET_DISCOVERY] "
-                f"details={self._starfield_command_details(None, boundary='planet_discovery_command', command_type='planet_discovery', phase='preflight', failure_category='capture', failure_reason='capture_unavailable')}"
+            self._emit_starfield_command_details(
+                "PLANET_DISCOVERY",
+                summary=None,
+                boundary="planet_discovery_command",
+                command_type="planet_discovery",
+                phase="preflight",
+                failure_category="capture",
+                failure_reason="capture_unavailable",
             )
             print("[PLANET_DISCOVERY] result=capture_unavailable")
             return 1
         ready, frame = self._recover_starfield(stage="pre_run", image=precheck_frame)
         if not ready or frame is None:
-            print(
-                "[PLANET_DISCOVERY] "
-                f"details={self._starfield_command_details(None, boundary='planet_discovery_command', command_type='planet_discovery', phase='preflight', failure_category='ui_state', failure_reason='not_starfield_ready')}"
+            self._emit_starfield_command_details(
+                "PLANET_DISCOVERY",
+                summary=None,
+                boundary="planet_discovery_command",
+                command_type="planet_discovery",
+                phase="preflight",
+                failure_category="ui_state",
+                failure_reason="not_starfield_ready",
             )
             print("[PLANET_DISCOVERY] result=not_starfield_ready returned_to_starfield=false")
             return 1
@@ -641,15 +759,19 @@ class Application:
         summary = merge_starfield_cache_summaries(discovery.cache_summary)
         if summary is not None:
             print(format_starfield_cache_run_rollup(summary, boundary="planet_discovery_command"))
-        discovery_ok = bool(discovery.ok and discovery.reason == "ok")
-        discovery_phase = "command" if discovery_ok else "post_invocation"
-        discovery_failure_category = None
-        if not discovery_ok:
-            discovery_failure_category = "recovery" if discovery.reason == "return_to_starfield_failed" else "discovery"
-        discovery_failure_reason = None if discovery_ok else str(discovery.reason)
-        print(
-            "[PLANET_DISCOVERY] "
-            f"details={self._starfield_command_details(summary, boundary='planet_discovery_command', command_type='planet_discovery', phase=discovery_phase, failure_category=discovery_failure_category, failure_reason=discovery_failure_reason)}"
+        discovery_phase, discovery_failure_category, discovery_failure_reason = self._command_outcome_metadata(
+            ok=bool(discovery.ok and discovery.reason == "ok"),
+            failure_category="recovery" if discovery.reason == "return_to_starfield_failed" else "discovery",
+            failure_reason=str(discovery.reason),
+        )
+        self._emit_starfield_command_details(
+            "PLANET_DISCOVERY",
+            summary=summary,
+            boundary="planet_discovery_command",
+            command_type="planet_discovery",
+            phase=discovery_phase,
+            failure_category=discovery_failure_category,
+            failure_reason=discovery_failure_reason,
         )
         target = (
             f" target=({discovery.target_point[0]},{discovery.target_point[1]})"

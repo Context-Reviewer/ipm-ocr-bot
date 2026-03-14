@@ -305,9 +305,13 @@ class Application:
         summary = merge_starfield_cache_summaries(probe.cache_summary)
         if summary is not None:
             print(format_starfield_cache_run_rollup(summary, boundary="starfield_probe_command"))
+        probe_ok = bool(probe.ok)
+        probe_phase = "command" if probe_ok else "post_invocation"
+        probe_failure_category = None if probe_ok else "probe"
+        probe_failure_reason = None if probe_ok else str(probe.reason)
         print(
             "[STARFIELD_PROBE] "
-            f"details={self._starfield_command_details(summary, boundary='starfield_probe_command', command_type='starfield_probe', phase='command')}"
+            f"details={self._starfield_command_details(summary, boundary='starfield_probe_command', command_type='starfield_probe', phase=probe_phase, failure_category=probe_failure_category, failure_reason=probe_failure_reason)}"
         )
         target = (
             f" target=({probe.target_point[0]},{probe.target_point[1]})"
@@ -637,9 +641,15 @@ class Application:
         summary = merge_starfield_cache_summaries(discovery.cache_summary)
         if summary is not None:
             print(format_starfield_cache_run_rollup(summary, boundary="planet_discovery_command"))
+        discovery_ok = bool(discovery.ok and discovery.reason == "ok")
+        discovery_phase = "command" if discovery_ok else "post_invocation"
+        discovery_failure_category = None
+        if not discovery_ok:
+            discovery_failure_category = "recovery" if discovery.reason == "return_to_starfield_failed" else "discovery"
+        discovery_failure_reason = None if discovery_ok else str(discovery.reason)
         print(
             "[PLANET_DISCOVERY] "
-            f"details={self._starfield_command_details(summary, boundary='planet_discovery_command', command_type='planet_discovery', phase='command')}"
+            f"details={self._starfield_command_details(summary, boundary='planet_discovery_command', command_type='planet_discovery', phase=discovery_phase, failure_category=discovery_failure_category, failure_reason=discovery_failure_reason)}"
         )
         target = (
             f" target=({discovery.target_point[0]},{discovery.target_point[1]})"

@@ -328,6 +328,13 @@ def test_run_starfield_probe_logs_focus_diagnostics_when_focus_unavailable(monke
     assert "activation_status=setforeground_failed" in captured
     assert "activation_error='error text'" in captured
     assert "target_title='BlueStacks App Player'" in captured
+    assert "[STARFIELD_PROBE] details=" in captured
+    assert "'boundary': 'starfield_probe_command'" in captured
+    assert "'type': 'starfield_probe'" in captured
+    assert "'phase': 'preflight'" in captured
+    assert "'failure_category': 'focus'" in captured
+    assert "'failure_reason': 'focus_unavailable'" in captured
+    assert "'starfield_cache': None" in captured
 
 
 def test_run_starfield_probe_logs_cache_run_rollup(monkeypatch, tmp_path, capsys):
@@ -392,6 +399,41 @@ def test_run_discovery_logs_focus_diagnostics_when_focus_unavailable(monkeypatch
     assert "active_title_after='Microsoft Edge'" in captured
     assert "activation_status=foreground_mismatch" in captured
     assert "target_title='BlueStacks App Player'" in captured
+    assert "[PLANET_DISCOVERY] details=" in captured
+    assert "'boundary': 'planet_discovery_command'" in captured
+    assert "'type': 'planet_discovery'" in captured
+    assert "'phase': 'preflight'" in captured
+    assert "'failure_category': 'focus'" in captured
+    assert "'failure_reason': 'focus_unavailable'" in captured
+    assert "'starfield_cache': None" in captured
+
+
+def test_run_discovery_logs_structured_details_when_capture_unavailable(monkeypatch, tmp_path, capsys):
+    app = _make_app(tmp_path)
+    monkeypatch.setattr(
+        app_module,
+        "ensure_focus_result",
+        lambda focus: FocusResult(
+            ok=True,
+            reason="already_focused",
+            active_title_before="BlueStacks App Player",
+            active_title_after="BlueStacks App Player",
+        ),
+    )
+    monkeypatch.setattr(Application, "_capture_frame", lambda self: None)
+
+    result = app.run_discover_planet_rank_once(1)
+
+    captured = capsys.readouterr().out
+    assert result == 1
+    assert "[PLANET_DISCOVERY] result=capture_unavailable" in captured
+    assert "[PLANET_DISCOVERY] details=" in captured
+    assert "'boundary': 'planet_discovery_command'" in captured
+    assert "'type': 'planet_discovery'" in captured
+    assert "'phase': 'preflight'" in captured
+    assert "'failure_category': 'capture'" in captured
+    assert "'failure_reason': 'capture_unavailable'" in captured
+    assert "'starfield_cache': None" in captured
 
 
 def test_run_discovery_logs_cache_run_rollup(monkeypatch, tmp_path, capsys):

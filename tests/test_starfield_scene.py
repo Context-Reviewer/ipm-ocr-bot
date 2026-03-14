@@ -378,6 +378,17 @@ def test_detect_starfield_scene_finds_ship_and_ranks_objects_nearest_first():
     assert select_nearest_candidate(scene) == ranked[0]
 
 
+def test_detect_starfield_scene_uses_component_bbox_center_for_lopsided_candidate():
+    image = _scene_image(ship_center=(80, 120), ship_size=(44, 16), ship_style="sprite")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((220, 100, 230, 140), fill=(220, 240, 255))
+    draw.rectangle((220, 130, 260, 140), fill=(220, 240, 255))
+    scene = detect_starfield_scene(image)
+    ranked = get_ranked_planet_candidates(scene)
+    assert len(ranked) == 1
+    assert (ranked[0].center_x, ranked[0].center_y) == (240, 120)
+
+
 def test_detect_starfield_scene_handles_missing_ship_cleanly():
     image = _scene_image()
     scene = detect_starfield_scene(

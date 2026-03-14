@@ -18,8 +18,8 @@ class FocusConfig:
 @dataclass(slots=True)
 class CaptureConfig:
     backend: str = "desktop"
-    adb_path: str = "adb"
-    adb_serial: str = ""
+    adb_path: str = r"C:\dev\platform-tools\adb.exe"
+    adb_serial: str = "127.0.0.1:5555"
     cache_ttl_seconds: float = 0.2
     target_resolution: tuple[int, int] | None = None
     rects_path: str = "rects.json"
@@ -114,6 +114,8 @@ class StarfieldConfig:
     click_probe_settle_seconds: float = 0.35
     save_probe_annotation: bool = True
     probe_annotation_dir: str = "out/starfield"
+    expected_orientation: str = "landscape"
+    planet_node_cache_path: str = "out/starfield_planet_nodes.json"
     ship_template_enabled: bool = True
     ship_template_path: str = "src/assets/ship_template.png"
     ship_template_threshold: float = 0.55

@@ -214,6 +214,10 @@ class Application:
             settle_seconds=float(getattr(self.config.starfield, "click_probe_settle_seconds", 0.35)),
             save_annotation=bool(getattr(self.config.starfield, "save_probe_annotation", False)),
             annotation_dir=str(getattr(self.config.starfield, "probe_annotation_dir", "out/starfield")),
+            expected_orientation=str(getattr(self.config.starfield, "expected_orientation", "landscape") or ""),
+            planet_node_cache_path=str(
+                getattr(self.config.starfield, "planet_node_cache_path", "out/starfield_planet_nodes.json") or ""
+            ),
             scene_viewport=getattr(self.config.starfield, "scene_viewport", None),
             scene_exclusion_zones=getattr(self.config.starfield, "scene_exclusion_zones", None),
             ship_template_enabled=bool(getattr(self.config.starfield, "ship_template_enabled", True)),
@@ -527,6 +531,10 @@ class Application:
             settle_seconds=float(getattr(self.config.starfield, "click_probe_settle_seconds", 0.35)),
             save_annotation=bool(getattr(self.config.starfield, "save_probe_annotation", False)),
             annotation_dir=str(run_dir),
+            expected_orientation=str(getattr(self.config.starfield, "expected_orientation", "landscape") or ""),
+            planet_node_cache_path=str(
+                getattr(self.config.starfield, "planet_node_cache_path", "out/starfield_planet_nodes.json") or ""
+            ),
             scene_viewport=getattr(self.config.starfield, "scene_viewport", None),
             scene_exclusion_zones=getattr(self.config.starfield, "scene_exclusion_zones", None),
             ship_template_enabled=bool(getattr(self.config.starfield, "ship_template_enabled", True)),

@@ -1,5 +1,6 @@
 from PIL import Image
 
+from ipm.starfield_cache import CachedStarfieldPlanetNode, load_starfield_planet_nodes, upsert_starfield_planet_node
 from ipm.starfield_probe import (
     PlanetDiscoveryResult,
     discover_nearest_starfield_planet,
@@ -303,8 +304,8 @@ def test_starfield_probe_uses_allowed_template_roi_when_excluded_false_anchor_ex
     assert result.scene.ship_detection_mode == "template"
     assert abs(result.scene.ship_center_x - 160) <= 3
     assert abs(result.scene.ship_center_y - 120) <= 3
-    assert result.target_point == (160, 232)
-    assert actions.calls == [("click_client_point", (160, 232), 0.0)]
+    assert result.target_point == (160, 231)
+    assert actions.calls == [("click_client_point", (160, 231), 0.0)]
 
 
 def test_starfield_probe_fails_closed_when_not_starfield_ready():
@@ -386,12 +387,64 @@ def test_starfield_probe_selects_nearest_candidate_and_confirms_panel():
     assert actions.calls == [("click_client_point", (270, 120), 0.0)]
 
 
-def test_starfield_probe_small_candidate_uses_fallback_click_after_primary_confirmation_failure():
+def test_starfield_probe_uses_cached_center_point_before_scene_detection(tmp_path):
+    cache_path = tmp_path / "starfield_nodes.json"
+    assert (
+        upsert_starfield_planet_node(
+            str(cache_path),
+            CachedStarfieldPlanetNode(
+                target_rank=1,
+                point=(123, 77),
+                image_size=(320, 240),
+                orientation="landscape",
+                radius=12,
+                planet_id=1,
+                title="1. BALOR",
+                canonical_title="Balor",
+            ),
+        )
+        is True
+    )
+    actions = FakeActions()
+    result = try_open_nearest_starfield_candidate(
+        capture=FakeCapture(Image.new("RGB", (320, 240), (4, 8, 16))),
+        actions=actions,
+        reader=FakeReader(PlanetPanelState(planet_id=1, title="1. BALOR", mining_cost=100, speed_cost=200)),
+        panel_is_readable=_panel_is_readable,
+        panel_is_confirmed=lambda panel: bool(panel and panel.title == "1. BALOR"),
+        settle_seconds=0.0,
+        expected_orientation="landscape",
+        planet_node_cache_path=str(cache_path),
+    )
+    assert result.ok is True
+    assert result.reason == "open_confirmed"
+    assert result.target_point == (123, 77)
+    assert actions.calls == [("click_client_point", (123, 77), 0.0)]
+
+
+def test_starfield_probe_refreshes_cache_after_cached_identity_mismatch(tmp_path):
+    cache_path = tmp_path / "starfield_nodes.json"
+    assert (
+        upsert_starfield_planet_node(
+            str(cache_path),
+            CachedStarfieldPlanetNode(
+                target_rank=1,
+                point=(123, 77),
+                image_size=(320, 240),
+                orientation="landscape",
+                radius=12,
+                planet_id=1,
+                title="1. BALOR",
+                canonical_title="Balor",
+            ),
+        )
+        is True
+    )
     actions = FakeActions()
     reader = FakeReader(
         [
-            PlanetPanelState(title="Ship Speed", mining_cost=300, speed_cost=400),
-            PlanetPanelState(planet_id=1, title="1. BALOR"),
+            PlanetPanelState(planet_id=2, title="2. DRASTA", mining_level=2, mining_cost=233, speed_cost=106),
+            PlanetPanelState(planet_id=1, title="1. BALOR", mining_level=2, mining_cost=233, speed_cost=106),
         ]
     )
     result = try_open_nearest_starfield_candidate(
@@ -399,19 +452,21 @@ def test_starfield_probe_small_candidate_uses_fallback_click_after_primary_confi
         actions=actions,
         reader=reader,
         panel_is_readable=_panel_is_readable,
-        panel_is_confirmed=lambda panel: bool(panel and panel.title == "1. BALOR"),
+        panel_is_confirmed=PlanetsTask._probe_panel_confirmed,
         settle_seconds=0.0,
-        small_candidate_fallback_max_radius=20,
-        small_candidate_fallback_offset_x=10,
-        small_candidate_fallback_offset_y=0,
+        expected_orientation="landscape",
+        planet_node_cache_path=str(cache_path),
     )
     assert result.ok is True
     assert result.reason == "open_confirmed"
-    assert result.target_point == (280, 120)
+    assert result.target_point == (270, 120)
     assert actions.calls == [
+        ("click_client_point", (123, 77), 0.0),
         ("click_client_point", (270, 120), 0.0),
-        ("click_client_point", (280, 120), 0.0),
     ]
+    cached_nodes = load_starfield_planet_nodes(str(cache_path))
+    assert cached_nodes[1].point == (270, 120)
+    assert cached_nodes[1].planet_id == 1
 
 
 def test_starfield_probe_uses_probe_read_fast_path_without_full_reread_on_confirmed_success():
@@ -454,14 +509,9 @@ def test_starfield_probe_falls_back_to_full_read_when_probe_read_is_not_confirme
     assert reader.calls == 1
 
 
-def test_starfield_probe_small_candidate_returns_panel_not_confirmed_after_fallback_exhausted():
+def test_starfield_probe_small_candidate_does_not_offset_retry_after_confirmation_failure():
     actions = FakeActions()
-    reader = FakeReader(
-        [
-            PlanetPanelState(title="Ship Speed", mining_cost=300, speed_cost=400),
-            PlanetPanelState(title="Ship Speed", mining_cost=350, speed_cost=450),
-        ]
-    )
+    reader = FakeReader(PlanetPanelState(title="Ship Speed", mining_cost=300, speed_cost=400))
     result = try_open_nearest_starfield_candidate(
         capture=FakeCapture(_scene_image(ship_center=(160, 120), objects=((270, 120, 12),))),
         actions=actions,
@@ -476,10 +526,7 @@ def test_starfield_probe_small_candidate_returns_panel_not_confirmed_after_fallb
     assert result.ok is False
     assert result.reason == "panel_not_confirmed"
     assert result.target_point == (270, 120)
-    assert actions.calls == [
-        ("click_client_point", (270, 120), 0.0),
-        ("click_client_point", (280, 120), 0.0),
-    ]
+    assert actions.calls == [("click_client_point", (270, 120), 0.0)]
 
 
 def test_starfield_probe_large_candidate_does_not_attempt_fallback_click():
@@ -499,6 +546,21 @@ def test_starfield_probe_large_candidate_does_not_attempt_fallback_click():
     assert result.ok is False
     assert result.reason == "panel_not_confirmed"
     assert actions.calls == [("click_client_point", (270, 120), 0.0)]
+
+
+def test_starfield_probe_fails_closed_on_portrait_geometry_mismatch():
+    actions = FakeActions()
+    result = try_open_nearest_starfield_candidate(
+        capture=FakeCapture(Image.new("RGB", (240, 320), (4, 8, 16))),
+        actions=actions,
+        reader=FakeReader(PlanetPanelState(planet_id=1, title="1. BALOR")),
+        panel_is_readable=_panel_is_readable,
+        settle_seconds=0.0,
+        expected_orientation="landscape",
+    )
+    assert result.ok is False
+    assert result.reason == "geometry_mismatch"
+    assert actions.calls == []
 
 
 def test_starfield_probe_selects_requested_rank_deterministically():

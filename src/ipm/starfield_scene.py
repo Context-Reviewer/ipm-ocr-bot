@@ -44,11 +44,11 @@ class StarfieldScene:
 
 @dataclass(slots=True, frozen=True)
 class _Component:
-    center_x: int
-    center_y: int
+    left: int
+    top: int
+    right: int
+    bottom: int
     area: int
-    width: int
-    height: int
 
     @property
     def aspect_ratio(self) -> float:
@@ -65,14 +65,24 @@ class _Component:
         return max(1, int(round(max(self.width, self.height) / 2.0)))
 
     @property
+    def width(self) -> int:
+        return max(1, int(self.right) - int(self.left))
+
+    @property
+    def height(self) -> int:
+        return max(1, int(self.bottom) - int(self.top))
+
+    @property
+    def center_x(self) -> int:
+        return int(round((int(self.left) + int(self.right) - 1) / 2.0))
+
+    @property
+    def center_y(self) -> int:
+        return int(round((int(self.top) + int(self.bottom) - 1) / 2.0))
+
+    @property
     def bbox(self) -> tuple[int, int, int, int]:
-        half_width = self.width / 2.0
-        half_height = self.height / 2.0
-        left = int(round(self.center_x - half_width))
-        top = int(round(self.center_y - half_height))
-        right = left + self.width
-        bottom = top + self.height
-        return (left, top, right, bottom)
+        return (int(self.left), int(self.top), int(self.right), int(self.bottom))
 
 
 def _connected_components(mask: np.ndarray) -> list[_Component]:
@@ -108,11 +118,11 @@ def _connected_components(mask: np.ndarray) -> list[_Component]:
                 continue
             components.append(
                 _Component(
-                    center_x=int(round(sum(xs) / area)),
-                    center_y=int(round(sum(ys) / area)),
+                    left=min_x,
+                    top=min_y,
+                    right=max_x + 1,
+                    bottom=max_y + 1,
                     area=area,
-                    width=max_x - min_x + 1,
-                    height=max_y - min_y + 1,
                 )
             )
     return components
@@ -229,12 +239,13 @@ def _component_from_template_detection(detection: ShipTemplateDetection) -> _Com
     match = detection.match
     if match is None:
         return None
+    bbox = tuple(int(value) for value in match.bbox)
     return _Component(
-        center_x=int(match.center_x),
-        center_y=int(match.center_y),
+        left=bbox[0],
+        top=bbox[1],
+        right=max(bbox[0] + 1, bbox[2]),
+        bottom=max(bbox[1] + 1, bbox[3]),
         area=max(1, int(match.area)),
-        width=max(1, int(match.width)),
-        height=max(1, int(match.height)),
     )
 
 

@@ -6,6 +6,14 @@ from pathlib import Path
 from PIL import Image
 
 from .domain_data import normalize_planet_name
+from .starfield_cache import (
+    CachedStarfieldPlanetNode,
+    cached_node_validation_reason,
+    image_orientation,
+    load_starfield_planet_nodes,
+    panel_matches_cached_identity,
+    upsert_starfield_planet_node,
+)
 from .starfield_scene import (
     StarfieldScene,
     annotate_starfield_scene,
@@ -117,6 +125,8 @@ def try_open_starfield_candidate_by_rank(
     settle_seconds: float,
     save_annotation: bool = False,
     annotation_dir: str = "out/starfield",
+    expected_orientation: str | None = None,
+    planet_node_cache_path: str | None = None,
     scene_viewport: tuple[float, float, float, float] | None = None,
     scene_exclusion_zones: tuple[tuple[float, float, float, float], ...] | None = None,
     ship_template_enabled: bool = False,
@@ -155,17 +165,32 @@ def try_open_starfield_candidate_by_rank(
     max_ship_area_ratio: float = 0.08,
 ) -> StarfieldProbeResult:
     probe_read = getattr(reader, "read_for_probe", None)
+    click_point = getattr(actions, "click_client_point", None)
 
-    def _attempt_confirmation(point: tuple[int, int], *, attempt_label: str) -> tuple[bool, str, object | None]:
+    def _attempt_confirmation(
+        point: tuple[int, int],
+        *,
+        attempt_label: str,
+        radius: int | None,
+        expected_cache_entry: CachedStarfieldPlanetNode | None = None,
+    ) -> tuple[bool, str, object | None]:
         print(
             "[PLANET_NAV] "
             f"click_policy attempt={attempt_label} point=({point[0]},{point[1]}) "
-            f"radius={target.radius}"
+            f"radius={radius}"
         )
         if not callable(click_point) or not click_point(point, delay=settle_seconds):
             return False, "click_failed", None
         first_panel = probe_read() if callable(probe_read) else reader.read()
-        if panel_is_readable(first_panel) and (not callable(panel_is_confirmed) or panel_is_confirmed(first_panel)):
+        first_panel_confirmed = panel_is_readable(first_panel) and (
+            not callable(panel_is_confirmed) or panel_is_confirmed(first_panel)
+        )
+        if first_panel_confirmed and expected_cache_entry is not None and not panel_matches_cached_identity(
+            first_panel,
+            expected_cache_entry,
+        ):
+            return False, "panel_identity_mismatch", first_panel
+        if first_panel_confirmed:
             return True, "open_confirmed", first_panel
         if callable(probe_read):
             panel = reader.read()
@@ -173,6 +198,8 @@ def try_open_starfield_candidate_by_rank(
                 return False, "panel_not_visible", panel
             if callable(panel_is_confirmed) and not panel_is_confirmed(panel):
                 return False, "panel_not_confirmed", panel
+            if expected_cache_entry is not None and not panel_matches_cached_identity(panel, expected_cache_entry):
+                return False, "panel_identity_mismatch", panel
             return True, "open_confirmed", panel
         if not panel_is_readable(first_panel):
             return False, "panel_not_visible", first_panel
@@ -198,6 +225,44 @@ def try_open_starfield_candidate_by_rank(
         if working_image is None:
             print("[PLANET_NAV] open_failed reason=capture_unavailable")
             return StarfieldProbeResult(ok=False, reason="capture_unavailable", rank=target_rank)
+    current_orientation = image_orientation(working_image.size)
+    normalized_expected_orientation = str(expected_orientation or "").strip().lower() or None
+    if normalized_expected_orientation is not None and current_orientation != normalized_expected_orientation:
+        print(
+            "[PLANET_NAV] "
+            f"open_failed reason=geometry_mismatch expected={normalized_expected_orientation} actual={current_orientation}"
+        )
+        return StarfieldProbeResult(ok=False, reason="geometry_mismatch", rank=target_rank)
+    cached_entry = load_starfield_planet_nodes(planet_node_cache_path).get(target_rank)
+    if cached_entry is not None:
+        cache_reason = cached_node_validation_reason(
+            cached_entry,
+            image_size=working_image.size,
+            expected_orientation=normalized_expected_orientation,
+        )
+        if cache_reason is None:
+            print(
+                "[PLANET_NAV] "
+                f"cache_hit rank={target_rank} point=({cached_entry.point[0]},{cached_entry.point[1]})"
+            )
+            cached_ok, cached_reason_text, cached_panel = _attempt_confirmation(
+                cached_entry.point,
+                attempt_label="cached",
+                radius=cached_entry.radius,
+                expected_cache_entry=cached_entry,
+            )
+            if cached_ok:
+                print("[PLANET_NAV] open_confirmed via=cache")
+                return StarfieldProbeResult(
+                    ok=True,
+                    reason="open_confirmed",
+                    target_point=cached_entry.point,
+                    rank=target_rank,
+                    panel=cached_panel,
+                )
+            print(f"[PLANET_NAV] cache_recover rank={target_rank} reason={cached_reason_text}")
+        else:
+            print(f"[PLANET_NAV] cache_skip rank={target_rank} reason={cache_reason}")
     resolved_viewport = resolve_starfield_viewport(working_image.size, scene_viewport)
     scene = detect_starfield_scene(
         working_image,
@@ -266,8 +331,7 @@ def try_open_starfield_candidate_by_rank(
         f"[PLANET_NAV] target=({target.center_x},{target.center_y}) "
         f"rank={target_rank} radius={target.radius}"
     )
-    click_point = getattr(actions, "click_client_point", None)
-    ok, reason, panel = _attempt_confirmation(target_point, attempt_label="primary")
+    ok, reason, panel = _attempt_confirmation(target_point, attempt_label="primary", radius=target.radius)
     if not ok and reason == "click_failed":
         print("[PLANET_NAV] open_failed reason=click_failed")
         return StarfieldProbeResult(
@@ -277,37 +341,6 @@ def try_open_starfield_candidate_by_rank(
             target_point=target_point,
             rank=target_rank,
         )
-    if (
-        not ok
-        and reason in {"panel_not_visible", "panel_not_confirmed"}
-        and target.radius is not None
-        and target.radius <= max(0, int(small_candidate_fallback_max_radius))
-    ):
-        fallback_point = (
-            target.center_x + int(small_candidate_fallback_offset_x),
-            target.center_y + int(small_candidate_fallback_offset_y),
-        )
-        print(
-            "[PLANET_NAV] "
-            f"click_policy fallback_point=({fallback_point[0]},{fallback_point[1]}) "
-            f"after={reason}"
-        )
-        fallback_ok, fallback_reason, fallback_panel = _attempt_confirmation(
-            fallback_point,
-            attempt_label="fallback",
-        )
-        if fallback_ok:
-            print("[PLANET_NAV] open_confirmed via=fallback")
-            return StarfieldProbeResult(
-                ok=True,
-                reason="open_confirmed",
-                scene=scene,
-                target_point=fallback_point,
-                rank=target_rank,
-                panel=fallback_panel,
-            )
-        reason = fallback_reason
-        panel = fallback_panel
     if not ok and reason == "click_failed":
         print("[PLANET_NAV] open_failed reason=click_failed")
         return StarfieldProbeResult(
@@ -338,6 +371,46 @@ def try_open_starfield_candidate_by_rank(
             rank=target_rank,
             panel=panel,
         )
+    if not ok and reason == "panel_identity_mismatch":
+        print("[PLANET_NAV] open_failed reason=panel_identity_mismatch")
+        return StarfieldProbeResult(
+            ok=False,
+            reason="panel_identity_mismatch",
+            scene=scene,
+            target_point=target_point,
+            rank=target_rank,
+            panel=panel,
+        )
+    if planet_node_cache_path:
+        raw_title = str(getattr(panel, "title", "")).strip() or None
+        ship_center = (
+            (scene.ship_center_x, scene.ship_center_y)
+            if scene.ship_center_x is not None and scene.ship_center_y is not None
+            else None
+        )
+        anchor_offset = (
+            (target_point[0] - ship_center[0], target_point[1] - ship_center[1]) if ship_center is not None else None
+        )
+        cache_saved = upsert_starfield_planet_node(
+            planet_node_cache_path,
+            CachedStarfieldPlanetNode(
+                target_rank=target_rank,
+                point=target_point,
+                image_size=(int(working_image.size[0]), int(working_image.size[1])),
+                orientation=current_orientation,
+                radius=target.radius,
+                planet_id=(
+                    int(getattr(panel, "planet_id"))
+                    if getattr(panel, "planet_id", None) is not None
+                    else None
+                ),
+                title=raw_title,
+                canonical_title=normalize_planet_name(raw_title),
+                ship_center=ship_center,
+                anchor_offset=anchor_offset,
+            ),
+        )
+        print(f"[PLANET_NAV] cache_update rank={target_rank} saved={'true' if cache_saved else 'false'}")
     print("[PLANET_NAV] open_confirmed via=primary")
     return StarfieldProbeResult(
         ok=True,
